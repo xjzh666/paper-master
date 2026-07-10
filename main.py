@@ -1,7 +1,7 @@
 import sys
 from pathlib import Path
 
-from paper_reader.parser import parse_pdf, Section
+from paper_reader.parser import parse_pdf, Section, ImageBlock
 from paper_reader.llm import load_config, LLMRouter
 from paper_reader.context import ConversationContext
 
@@ -44,7 +44,8 @@ def handle_question(
         section = Section(
             title="Full Paper", level=0, text=all_text,
             page_start=0, page_end=999, images=[
-                type('ImageBlock', (), {'image_bytes': b})() for b in all_images
+                ImageBlock(page=0, bbox=(0, 0, 0, 0), image_bytes=b)
+                for b in all_images
             ],
         )
 

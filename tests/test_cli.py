@@ -1,13 +1,10 @@
 # tests/test_cli.py
-import sys
-from io import StringIO
-from unittest.mock import patch, MagicMock
-
-import pytest
+from unittest.mock import MagicMock
 
 from paper_reader.context import ConversationContext
 from paper_reader.parser import PaperDocument, Section
 from paper_reader.llm import LLMRouter
+from main import handle_question
 
 
 def make_paper():
@@ -28,7 +25,6 @@ def test_handle_question_finds_section_and_answers():
     router.answer.return_value = "This is the answer."
 
     question = "What does section 2 say?"
-    from main import handle_question
     answer = handle_question(question, ctx, router)
 
     router.answer.assert_called_once()
@@ -42,7 +38,6 @@ def test_handle_question_general_without_section():
     router.answer.return_value = "General answer."
 
     question = "What is this paper about?"
-    from main import handle_question
     answer = handle_question(question, ctx, router)
 
     router.answer.assert_called_once()

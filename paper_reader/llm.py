@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-from pathlib import Path
 
 import yaml
 
@@ -171,15 +170,21 @@ def create_client(provider: str, config: dict) -> LLMClient:
     models = config.get("models", {})
 
     if provider == "anthropic":
+        api_key = api_keys.get("anthropic", "")
+        if not api_key:
+            raise ValueError("Anthropic API key is missing or empty in config")
         model_config = models.get("text", {})
         return AnthropicClient(
-            api_key=api_keys.get("anthropic", ""),
+            api_key=api_key,
             model=model_config.get("model", "claude-sonnet-4-6"),
         )
     elif provider == "openai":
+        api_key = api_keys.get("openai", "")
+        if not api_key:
+            raise ValueError("OpenAI API key is missing or empty in config")
         model_config = models.get("vision", {})
         return OpenAIClient(
-            api_key=api_keys.get("openai", ""),
+            api_key=api_key,
             model=model_config.get("model", "gpt-4o"),
             base_url=model_config.get("base_url"),
         )

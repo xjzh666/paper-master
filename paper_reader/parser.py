@@ -81,8 +81,6 @@ def _extract_abstract(text: str) -> str:
 
 
 def _extract_sections(doc) -> list[Section]:
-    import fitz
-
     toc = doc.get_toc()
     if toc:
         return _sections_from_toc(doc, toc)
@@ -92,18 +90,25 @@ def _extract_sections(doc) -> list[Section]:
 def _extract_images_from_page(page) -> list[ImageBlock]:
     images = []
     image_infos = page.get_image_info()
-    image_refs = page.get_images()
-    for i, img_info in enumerate(image_infos):
+    for img_info in image_infos:
         bbox = img_info.get("bbox", (0, 0, 0, 0))
-        xref = image_refs[i][0] if i < len(image_refs) else 0
+        xref = img_info.get("xref", 0)
+        if not xref:
+            # PyMuPDF 1.28+ may omit xref from get_image_info;
+            # fall back to get_images() for xref lookup (not by index pairing).
+            for ref in page.get_images():
+                if ref[0]:
+                    xref = ref[0]
+                    break
         if xref:
             base_image = page.parent.extract_image(xref)
             image_bytes = base_image.get("image", b"")
-            images.append(ImageBlock(
-                page=page.number,
-                bbox=tuple(bbox),
-                image_bytes=image_bytes,
-            ))
+            if image_bytes:
+                images.append(ImageBlock(
+                    page=page.number,
+                    bbox=tuple(bbox),
+                    image_bytes=image_bytes,
+                ))
     return images
 
 

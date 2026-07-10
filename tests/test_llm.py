@@ -68,8 +68,8 @@ def test_openai_client_chat_returns_string(config_file):
     assert client.api_key == "test-openai-key"
 
 
-from unittest.mock import MagicMock
-from paper_reader.llm import LLMRouter
+from unittest.mock import MagicMock, patch
+from paper_reader.llm import LLMRouter, create_client
 from paper_reader.parser import Section
 
 
@@ -139,3 +139,59 @@ def test_router_formats_section_content():
     user_message = call_messages[-1]["content"]
     assert "2. Methods" in user_message
     assert "Method text here." in user_message
+
+
+def test_create_client_raises_on_missing_api_key():
+    """create_client should raise ValueError when the API key is missing or empty."""
+    config_no_key = {
+        "models": {
+            "text": {"provider": "anthropic", "model": "claude-sonnet-4-6"},
+        },
+        "api_keys": {
+            "anthropic": "",
+        },
+    }
+    with pytest.raises(ValueError, match="Anthropic API key"):
+        create_client("anthropic", config_no_key)
+
+    config_missing_key = {
+        "models": {
+            "vision": {"provider": "openai", "model": "gpt-4o"},
+        },
+        "api_keys": {},
+    }
+    with pytest.raises(ValueError, match="OpenAI API key"):
+        create_client("openai", config_missing_key)
+
+
+def test_llm_router_constructor_with_valid_config():
+    """LLMRouter(config) should construct successfully with valid API keys."""
+    config = {
+        "models": {
+            "text": {"provider": "anthropic", "model": "claude-sonnet-4-6"},
+            "vision": {"provider": "openai", "model": "gpt-4o"},
+        },
+        "api_keys": {
+            "anthropic": "test-anthropic-key",
+            "openai": "test-openai-key",
+        },
+    }
+    router = LLMRouter(config)
+    assert router._text_client is not None
+    assert router._vision_client is not None
+
+
+def test_llm_router_constructor_raises_on_missing_keys():
+    """LLMRouter(config) should raise ValueError when API keys are missing."""
+    config = {
+        "models": {
+            "text": {"provider": "anthropic", "model": "claude-sonnet-4-6"},
+            "vision": {"provider": "openai", "model": "gpt-4o"},
+        },
+        "api_keys": {
+            "anthropic": "",
+            "openai": "",
+        },
+    }
+    with pytest.raises(ValueError):
+        LLMRouter(config)
