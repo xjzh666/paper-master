@@ -1,0 +1,11 @@
+models:
+  text:
+    provider: anthropic
+    model: claude-sonnet-4-6
+  vision:
+    provider: openai
+    model: gpt-4o
+
+api_keys:
+  anthropic: "your-anthropic-api-key"
+  openai: "your-openai-api-key"
