@@ -121,6 +121,51 @@ class OpenAIClient(LLMClient):
         return response.choices[0].message.content
 
 
+SYSTEM_PROMPT = """You are a paper-reading assistant. You help users understand academic papers by answering questions based on the paper content provided to you.
+
+Guidelines:
+- Answer based only on the provided paper content
+- Be accurate and concise
+- If the provided content doesn't contain enough information to answer, say so
+- When discussing figures or tables, describe what they show
+- Use the section title to contextualize your answer"""
+
+
+class LLMRouter:
+    def __init__(self, config: dict):
+        self._text_client = create_client(
+            config["models"]["text"]["provider"], config
+        )
+        self._vision_client = create_client(
+            config["models"]["vision"]["provider"], config
+        )
+
+    def answer(
+        self, section: "Section", question: str, history: list[dict]
+    ) -> str:
+        content = self._build_content(section, question)
+
+        if section.images or section.tables:
+            images = [img.image_bytes for img in section.images]
+            images += [t.image_bytes for t in section.tables]
+            return self._vision_client.chat_with_images(
+                content, images, system_prompt=SYSTEM_PROMPT
+            )
+
+        messages = list(history)
+        messages.append({"role": "user", "content": content})
+        return self._text_client.chat(messages, system_prompt=SYSTEM_PROMPT)
+
+    def _build_content(self, section: "Section", question: str) -> str:
+        parts = [
+            f"Section: {section.title}",
+            f"Content:\n{section.text}",
+            "",
+            f"Question: {question}",
+        ]
+        return "\n".join(parts)
+
+
 def create_client(provider: str, config: dict) -> LLMClient:
     api_keys = config.get("api_keys", {})
     models = config.get("models", {})
