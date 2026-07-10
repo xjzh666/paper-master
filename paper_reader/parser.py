@@ -89,6 +89,22 @@ def _extract_sections(doc) -> list[Section]:
     return _sections_by_font(doc)
 
 
+def _extract_images_from_page(page) -> list[ImageBlock]:
+    images = []
+    for img_info in page.get_image_info():
+        xref = img_info.get("xref", 0)
+        bbox = img_info.get("bbox", (0, 0, 0, 0))
+        if xref:
+            base_image = page.parent.extract_image(xref)
+            image_bytes = base_image.get("image", b"")
+            images.append(ImageBlock(
+                page=page.number,
+                bbox=tuple(bbox),
+                image_bytes=image_bytes,
+            ))
+    return images
+
+
 def _sections_from_toc(doc, toc: list) -> list[Section]:
     sections = []
     for i, (level, title, page) in enumerate(toc):
@@ -96,8 +112,10 @@ def _sections_from_toc(doc, toc: list) -> list[Section]:
         end_page = toc[i + 1][2] - 1 if i + 1 < len(toc) else doc.page_count - 1
 
         text = ""
+        images = []
         for p in range(start_page, end_page + 1):
             text += doc[p].get_text()
+            images.extend(_extract_images_from_page(doc[p]))
 
         sections.append(Section(
             title=title.strip(),
@@ -105,6 +123,7 @@ def _sections_from_toc(doc, toc: list) -> list[Section]:
             text=text,
             page_start=start_page,
             page_end=end_page,
+            images=images,
         ))
     return sections
 
