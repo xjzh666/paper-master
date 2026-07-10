@@ -91,9 +91,11 @@ def _extract_sections(doc) -> list[Section]:
 
 def _extract_images_from_page(page) -> list[ImageBlock]:
     images = []
-    for img_info in page.get_image_info():
-        xref = img_info.get("xref", 0)
+    image_infos = page.get_image_info()
+    image_refs = page.get_images()
+    for i, img_info in enumerate(image_infos):
         bbox = img_info.get("bbox", (0, 0, 0, 0))
+        xref = image_refs[i][0] if i < len(image_refs) else 0
         if xref:
             base_image = page.parent.extract_image(xref)
             image_bytes = base_image.get("image", b"")
@@ -155,12 +157,18 @@ def _sections_by_font(doc) -> list[Section]:
         page_start = int(start / total_chars * doc.page_count)
         page_end = min(int(end / total_chars * doc.page_count), doc.page_count - 1)
 
+        # Extract images from pages in this section's range
+        images = []
+        for p in range(page_start, page_end + 1):
+            images.extend(_extract_images_from_page(doc[p]))
+
         sections.append(Section(
             title=title,
             level=1,
             text=text,
             page_start=page_start,
             page_end=page_end,
+            images=images,
         ))
 
     return sections
