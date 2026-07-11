@@ -132,12 +132,8 @@ Guidelines:
 
 class LLMRouter:
     def __init__(self, config: dict):
-        self._text_client = create_client(
-            config["models"]["text"]["provider"], config
-        )
-        self._vision_client = create_client(
-            config["models"]["vision"]["provider"], config
-        )
+        self._text_client = create_client(config["models"]["text"])
+        self._vision_client = create_client(config["models"]["vision"])
 
     def answer(
         self, section: "Section", question: str, history: list[dict]
@@ -165,28 +161,20 @@ class LLMRouter:
         return "\n".join(parts)
 
 
-def create_client(provider: str, config: dict) -> LLMClient:
-    api_keys = config.get("api_keys", {})
-    models = config.get("models", {})
+def create_client(model_config: dict) -> LLMClient:
+    provider = model_config.get("provider", "openai")
+    api_key = model_config.get("api_key", "")
+    if not api_key:
+        raise ValueError(
+            f"API key is missing or empty for '{provider}' model. "
+            f"Add 'api_key' under the model in config.yaml"
+        )
+    model = model_config.get("model", "gpt-4o")
+    base_url = model_config.get("base_url")
 
     if provider == "anthropic":
-        api_key = api_keys.get("anthropic", "")
-        if not api_key:
-            raise ValueError("Anthropic API key is missing or empty in config")
-        model_config = models.get("text", {})
-        return AnthropicClient(
-            api_key=api_key,
-            model=model_config.get("model", "claude-sonnet-4-6"),
-        )
+        return AnthropicClient(api_key=api_key, model=model)
     elif provider == "openai":
-        api_key = api_keys.get("openai", "")
-        if not api_key:
-            raise ValueError("OpenAI API key is missing or empty in config")
-        model_config = models.get("vision", {})
-        return OpenAIClient(
-            api_key=api_key,
-            model=model_config.get("model", "gpt-4o"),
-            base_url=model_config.get("base_url"),
-        )
+        return OpenAIClient(api_key=api_key, model=model, base_url=base_url)
     else:
         raise ValueError(f"Unknown provider: {provider}")

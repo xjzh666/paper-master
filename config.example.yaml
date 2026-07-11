@@ -1,11 +1,11 @@
 models:
   text:
-    provider: anthropic
-    model: claude-sonnet-4-6
+    provider: openai
+    model: gpt-4o-mini
+    api_key: "sk-your-api-key"
+    # base_url: "https://your-endpoint/v1"  # 可选，使用第三方 API 时填写
   vision:
     provider: openai
     model: gpt-4o
-
-api_keys:
-  anthropic: "your-anthropic-api-key"
-  openai: "your-openai-api-key"
+    api_key: "sk-your-api-key"
+    # base_url: "https://your-endpoint/v1"  # 可选，使用第三方 API 时填写

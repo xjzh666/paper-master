@@ -66,7 +66,7 @@ models:
 ### 基础用法
 
 ```bash
-python main.py paper.pdf
+python3 main.py paper.pdf
 ```
 
 打开后会自动展示论文摘要和目录结构：
