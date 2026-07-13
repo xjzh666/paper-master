@@ -1,10 +1,12 @@
 # tests/test_cli.py
-from unittest.mock import MagicMock
+import tempfile
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from paper_reader.context import ConversationContext
 from paper_reader.blocks import PaperDocument, ContentBlock, SemanticChunk, merge_blocks
 from paper_reader.llm import LLMRouter
-from main import handle_question
+from main import handle_question, batch_parse
 
 
 def make_paper():
@@ -47,3 +49,26 @@ def test_handle_question_general_without_section():
 
     router.answer.assert_called_once()
     assert answer == "General answer."
+
+
+def test_batch_parse_no_pdfs(tmp_path):
+    """batch_parse exits gracefully when no PDFs found."""
+    import sys
+    try:
+        batch_parse(str(tmp_path))
+    except SystemExit as e:
+        assert e.code == 1
+
+
+def test_batch_parse_with_pdfs(tmp_path):
+    """batch_parse processes PDFs successfully."""
+    # Create dummy PDF files
+    for name in ["paper1.pdf", "paper2.pdf"]:
+        (tmp_path / name).write_bytes(b"%PDF-1.4 fake pdf")
+
+    fake_paper = make_paper()
+    with patch("main.MinerUParser") as mock_cls:
+        mock_cls.return_value.parse.return_value = fake_paper
+        batch_parse(str(tmp_path))
+
+    assert mock_cls.return_value.parse.call_count == 2

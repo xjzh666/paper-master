@@ -123,10 +123,50 @@ def interactive_loop(paper_path: str) -> None:
                 print(f"\nError: {e}")
 
 
+def batch_parse(papers_dir: str) -> None:
+    dir_path = Path(papers_dir)
+    if not dir_path.is_dir():
+        print(f"Error: Not a directory: {papers_dir}")
+        sys.exit(1)
+
+    pdf_files = sorted(dir_path.glob("*.pdf"))
+    if not pdf_files:
+        print(f"No PDF files found in {papers_dir}")
+        sys.exit(1)
+
+    print(f"Found {len(pdf_files)} PDF(s) in {papers_dir}\n")
+    parser = MinerUParser()
+    success = 0
+    failed = 0
+
+    for i, pdf_path in enumerate(pdf_files, 1):
+        print(f"[{i}/{len(pdf_files)}] {pdf_path.name}")
+        try:
+            paper = parser.parse(str(pdf_path))
+            chunk_count = len(paper.chunks)
+            print(f"  OK — {len(paper.blocks)} blocks, {chunk_count} chunks, "
+                  f"title: {paper.title[:60]}")
+            success += 1
+        except Exception as e:
+            print(f"  FAILED — {e}")
+            failed += 1
+        print()
+
+    print(f"Done: {success} succeeded, {failed} failed")
+
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: python main.py <path/to/paper.pdf>")
+        print("       python main.py --batch <path/to/papers/dir>")
         sys.exit(1)
+
+    if sys.argv[1] == "--batch":
+        if len(sys.argv) < 3:
+            print("Usage: python main.py --batch <path/to/papers/dir>")
+            sys.exit(1)
+        batch_parse(sys.argv[2])
+        return
 
     paper_path = sys.argv[1]
     if not Path(paper_path).exists():
