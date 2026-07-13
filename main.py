@@ -16,19 +16,22 @@ def show_overview(ctx: ConversationContext) -> None:
     print("\n" + "=" * 60)
     print(ctx.get_overview())
     print("=" * 60)
-    print("\nYou can ask questions about any section. Type /help for commands, /quit to exit.\n")
+    print("\n直接输入问题即可。输入 /help 查看命令，/quit 或 /exit 退出。\n")
 
 
 def show_help() -> None:
     print("""
-Commands:
-  /overview  - Show paper overview again
-  /sections  - List all sections
-  /help      - Show this help
-  /quit      - Exit
+命令:
+  /overview  - 重新显示论文概览
+  /sections  - 列出所有章节
+  /help      - 显示帮助
+  /quit      - 退出
+  /exit      - 退出
 
-You can ask questions about the paper content directly.
-Refer to sections by number (e.g., "What does section 2.1 say?")
+直接输入问题即可，例如：
+  这篇论文的核心贡献是什么？
+  第 2.1 节的方法是怎么实现的？
+  实验用的什么数据集？
 """)
 
 
@@ -77,19 +80,19 @@ def interactive_loop(paper_path: str) -> None:
     try:
         config = load_config("config.yaml")
     except FileNotFoundError:
-        print("Error: config.yaml not found. Copy config.example.yaml to config.yaml and edit it.")
+        print("错误: 未找到 config.yaml。请复制 config.example.yaml 为 config.yaml 并填入 API Key。")
         sys.exit(1)
 
-    print(f"\nLoading paper: {paper_path}...")
+    print(f"\n正在加载论文: {paper_path}...")
     try:
         parser = MinerUParser()
         paper = parser.parse(paper_path)
     except Exception as e:
-        print(f"Error parsing PDF: {e}")
+        print(f"解析失败: {e}")
         sys.exit(1)
 
     if not paper.blocks:
-        print("Warning: No content detected in this PDF. You can still ask questions.")
+        print("警告: 未检测到论文内容，但你仍然可以提问。")
 
     ctx = ConversationContext(paper)
     router = LLMRouter(config)
@@ -99,14 +102,14 @@ def interactive_loop(paper_path: str) -> None:
         try:
             user_input = input("\n> ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\nGoodbye!")
+            print("\n再见！")
             break
 
         if not user_input:
             continue
 
-        if user_input == "/quit":
-            print("Goodbye!")
+        if user_input in ("/quit", "/exit"):
+            print("再见！")
             break
         elif user_input == "/help":
             show_help()
@@ -115,26 +118,26 @@ def interactive_loop(paper_path: str) -> None:
         elif user_input == "/sections":
             print(ctx.get_overview())
         else:
-            print("\nThinking...")
+            print("\n思考中...")
             try:
                 answer = handle_question(user_input, ctx, router)
                 print(f"\n{answer}")
             except Exception as e:
-                print(f"\nError: {e}")
+                print(f"\n错误: {e}")
 
 
 def batch_parse(papers_dir: str) -> None:
     dir_path = Path(papers_dir)
     if not dir_path.is_dir():
-        print(f"Error: Not a directory: {papers_dir}")
+        print(f"错误: 不是目录: {papers_dir}")
         sys.exit(1)
 
     pdf_files = sorted(dir_path.glob("*.pdf"))
     if not pdf_files:
-        print(f"No PDF files found in {papers_dir}")
+        print(f"目录中没有 PDF 文件: {papers_dir}")
         sys.exit(1)
 
-    print(f"Found {len(pdf_files)} PDF(s) in {papers_dir}\n")
+    print(f"在 {papers_dir} 中找到 {len(pdf_files)} 个 PDF\n")
     parser = MinerUParser()
     success = 0
     failed = 0
@@ -144,33 +147,33 @@ def batch_parse(papers_dir: str) -> None:
         try:
             paper = parser.parse(str(pdf_path))
             chunk_count = len(paper.chunks)
-            print(f"  OK — {len(paper.blocks)} blocks, {chunk_count} chunks, "
-                  f"title: {paper.title[:60]}")
+            print(f"  成功 — {len(paper.blocks)} 个块, {chunk_count} 个语义块, "
+                  f"标题: {paper.title[:60]}")
             success += 1
         except Exception as e:
-            print(f"  FAILED — {e}")
+            print(f"  失败 — {e}")
             failed += 1
         print()
 
-    print(f"Done: {success} succeeded, {failed} failed")
+    print(f"完成: {success} 成功, {failed} 失败")
 
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python main.py <path/to/paper.pdf>")
-        print("       python main.py --batch <path/to/papers/dir>")
+        print("用法: python main.py <论文.pdf>")
+        print("      python main.py --batch <论文目录>")
         sys.exit(1)
 
     if sys.argv[1] == "--batch":
         if len(sys.argv) < 3:
-            print("Usage: python main.py --batch <path/to/papers/dir>")
+            print("用法: python main.py --batch <论文目录>")
             sys.exit(1)
         batch_parse(sys.argv[2])
         return
 
     paper_path = sys.argv[1]
     if not Path(paper_path).exists():
-        print(f"Error: File not found: {paper_path}")
+        print(f"错误: 文件不存在: {paper_path}")
         sys.exit(1)
 
     interactive_loop(paper_path)

@@ -92,17 +92,17 @@ class ConversationContext:
 
     def get_overview(self) -> str:
         lines = [
-            f"Paper: {self.paper.title}",
+            f"论文: {self.paper.title}",
             "",
         ]
         if self.paper.abstract:
             preview = self.paper.abstract[:500]
             if len(self.paper.abstract) > 500:
                 preview += "..."
-            lines.append(f"Abstract: {preview}")
+            lines.append(f"摘要: {preview}")
             lines.append("")
 
-        lines.append("Sections:")
+        lines.append("章节:")
         seen: set[str] = set()
         for b in self.paper.blocks:
             if b.level > 0:

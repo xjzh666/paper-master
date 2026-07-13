@@ -120,14 +120,15 @@ class OpenAIClient(LLMClient):
         return response.choices[0].message.content
 
 
-SYSTEM_PROMPT = """You are a paper-reading assistant. You help users understand academic papers by answering questions based on the paper content provided to you.
+SYSTEM_PROMPT = """你是一个论文阅读助手。你根据提供的论文内容帮助用户理解学术论文，用中文回答问题。
 
-Guidelines:
-- Answer based only on the provided paper content
-- Be accurate and concise
-- If the provided content doesn't contain enough information to answer, say so
-- When discussing figures or tables, describe what they show
-- Use the section title to contextualize your answer"""
+准则:
+- 仅根据提供的论文内容作答
+- 回答准确、简洁
+- 用中文回复
+- 如果提供的内容不足以回答问题，请明确说明
+- 讨论图表时，描述其展示的内容
+- 引用章节标题来为回答提供上下文"""
 
 
 class LLMRouter:
@@ -153,10 +154,10 @@ class LLMRouter:
     def _build_content(self, text: str, question: str, title: str = "") -> str:
         parts = []
         if title:
-            parts.append(f'From "{title}":')
+            parts.append(f'论文: "{title}"')
         parts.append(text)
         parts.append("")
-        parts.append(f"Question: {question}")
+        parts.append(f"问题: {question}")
         return "\n".join(parts)
 
 
