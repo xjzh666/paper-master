@@ -2,7 +2,6 @@
 import json
 import tempfile
 from pathlib import Path
-from unittest.mock import patch, MagicMock
 
 import pytest
 from paper_reader.mineru_parser import MinerUParser

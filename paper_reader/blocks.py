@@ -79,6 +79,7 @@ class PaperDocument:
     blocks: list[ContentBlock] = field(default_factory=list)
     chunks: list[SemanticChunk] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
+    result_dir: str = ""
 
     def to_dict(self) -> dict:
         block_index_map = {id(b): i for i, b in enumerate(self.blocks)}
@@ -91,6 +92,7 @@ class PaperDocument:
                 for c in self.chunks
             ],
             "metadata": self.metadata,
+            "result_dir": self.result_dir,
         }
 
     @classmethod
@@ -104,6 +106,7 @@ class PaperDocument:
             filepath=d["filepath"], title=d.get("title", ""),
             abstract=d.get("abstract", ""), blocks=blocks, chunks=chunks,
             metadata=d.get("metadata", {}),
+            result_dir=d.get("result_dir", ""),
         )
 
 

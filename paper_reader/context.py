@@ -1,3 +1,5 @@
+from sklearn.feature_extraction.text import TfidfVectorizer
+
 from paper_reader.blocks import PaperDocument, ContentBlock, SemanticChunk
 
 
@@ -6,6 +8,11 @@ class ConversationContext:
         self.paper = paper
         self.history: list[dict] = []
         self._chunk_texts: list[str] = [c.text for c in paper.chunks]
+        self._vectorizer: TfidfVectorizer | None = None
+        self._tfidf_matrix = None
+        if self._chunk_texts:
+            self._vectorizer = TfidfVectorizer(stop_words="english")
+            self._tfidf_matrix = self._vectorizer.fit_transform(self._chunk_texts)
 
     def add_message(self, role: str, content: str) -> None:
         self.history.append({"role": role, "content": content})
@@ -16,13 +23,13 @@ class ConversationContext:
         if len(self.paper.chunks) <= top_k:
             return list(self.paper.chunks)
 
-        from sklearn.feature_extraction.text import TfidfVectorizer
+        if self._vectorizer is None or self._tfidf_matrix is None:
+            return list(self.paper.chunks[:top_k])
+
         from sklearn.metrics.pairwise import cosine_similarity
 
-        vectorizer = TfidfVectorizer(stop_words="english")
-        tfidf_matrix = vectorizer.fit_transform(self._chunk_texts)
-        query_vec = vectorizer.transform([query])
-        similarities = cosine_similarity(query_vec, tfidf_matrix).flatten()
+        query_vec = self._vectorizer.transform([query])
+        similarities = cosine_similarity(query_vec, self._tfidf_matrix).flatten()
         top_indices = similarities.argsort()[-top_k:][::-1]
 
         return [self.paper.chunks[i] for i in top_indices if similarities[i] > 0]

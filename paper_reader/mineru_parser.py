@@ -96,6 +96,7 @@ class MinerUParser:
             blocks=blocks,
             chunks=chunks,
             metadata={},
+            result_dir=str(result_dir),
         )
 
     def _load_json(self, result_dir: Path) -> list[dict]:

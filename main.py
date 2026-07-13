@@ -1,9 +1,15 @@
+import re
 import sys
 from pathlib import Path
 
 from paper_reader.mineru_parser import MinerUParser
 from paper_reader.llm import load_config, LLMRouter
 from paper_reader.context import ConversationContext
+
+
+def _is_section_query(query: str) -> bool:
+    return bool(re.search(r'\bsection\b', query.lower())) or \
+           bool(re.search(r'\b\d+(\.\d+)+\b', query))
 
 
 def show_overview(ctx: ConversationContext) -> None:
@@ -31,8 +37,8 @@ def handle_question(
 ) -> str:
     ctx.add_message("user", question)
 
-    # Try section lookup first (explicit section reference)
-    blocks = ctx.find_section(question)
+    # Try section lookup only for explicit section references
+    blocks = ctx.find_section(question) if _is_section_query(question) else None
     if blocks is not None:
         # Build a temporary chunk list from these blocks for build_context
         from paper_reader.blocks import SemanticChunk
@@ -55,7 +61,7 @@ def handle_question(
     # Load image bytes
     image_bytes_list: list[bytes] = []
     for img_block in images:
-        data = img_block.load_image("")
+        data = img_block.load_image(ctx.paper.result_dir)
         if data:
             image_bytes_list.append(data)
 
