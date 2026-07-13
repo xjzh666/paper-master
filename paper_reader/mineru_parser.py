@@ -22,9 +22,15 @@ class MinerUParser:
         if cached is not None:
             return cached
 
-        self._run_mineru(pdf_path, output_dir)
-        result_dir = self._find_result_dir(output_dir, pdf_path)
-        paper = self._build_paper(pdf_path, result_dir)
+        # Skip MinerU if output already exists (e.g. from manual run)
+        try:
+            result_dir = self._find_result_dir(output_dir, pdf_path)
+            paper = self._build_paper(pdf_path, result_dir)
+        except (FileNotFoundError, ValueError):
+            self._run_mineru(pdf_path, output_dir)
+            result_dir = self._find_result_dir(output_dir, pdf_path)
+            paper = self._build_paper(pdf_path, result_dir)
+
         self._save_cache(cache_key, paper)
         return paper
 
@@ -100,11 +106,12 @@ class MinerUParser:
         )
 
     def _load_json(self, result_dir: Path) -> list[dict]:
-        for name in ["content_list_v2.json", "content_list.json"]:
-            path = result_dir / name
-            if path.exists():
-                with open(path) as f:
-                    return json.load(f)
+        for suffix in ["content_list_v2.json", "content_list.json"]:
+            for name in [suffix, f"*_{suffix}"]:
+                matches = list(result_dir.glob(name))
+                if matches:
+                    with open(matches[0]) as f:
+                        return json.load(f)
         raise FileNotFoundError(f"No content_list JSON in {result_dir}")
 
     def _extract_title(self, blocks: list[ContentBlock]) -> str:
