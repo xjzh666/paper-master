@@ -71,9 +71,7 @@ def test_openai_client_chat_returns_string(config_file):
     assert client.api_key == "test-openai-key"
 
 
-from unittest.mock import MagicMock
 from paper_reader.llm import LLMRouter
-from paper_reader.parser import Section
 
 
 class FakeClient:
