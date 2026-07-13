@@ -1,34 +1,87 @@
-from paper_reader.parser import PaperDocument, Section
+from paper_reader.blocks import PaperDocument, ContentBlock, SemanticChunk
 
 
 class ConversationContext:
     def __init__(self, paper: PaperDocument):
         self.paper = paper
         self.history: list[dict] = []
+        self._chunk_texts: list[str] = [c.text for c in paper.chunks]
 
     def add_message(self, role: str, content: str) -> None:
         self.history.append({"role": role, "content": content})
 
-    def find_section(self, query: str) -> Section | None:
+    def search_chunks(self, query: str, top_k: int = 3) -> list[SemanticChunk]:
+        if not self.paper.chunks:
+            return []
+        if len(self.paper.chunks) <= top_k:
+            return list(self.paper.chunks)
+
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.metrics.pairwise import cosine_similarity
+
+        vectorizer = TfidfVectorizer(stop_words="english")
+        tfidf_matrix = vectorizer.fit_transform(self._chunk_texts)
+        query_vec = vectorizer.transform([query])
+        similarities = cosine_similarity(query_vec, tfidf_matrix).flatten()
+        top_indices = similarities.argsort()[-top_k:][::-1]
+
+        return [self.paper.chunks[i] for i in top_indices if similarities[i] > 0]
+
+    def build_context(
+        self, chunks: list[SemanticChunk], window: int = 2
+    ) -> tuple[str, list[ContentBlock]]:
+        if not chunks:
+            return "", []
+
+        all_chunks = self.paper.chunks
+        selected_indices: set[int] = set()
+        for c in chunks:
+            try:
+                idx = all_chunks.index(c)
+                start = max(0, idx - window)
+                end = min(len(all_chunks), idx + window + 1)
+                selected_indices.update(range(start, end))
+            except ValueError:
+                continue
+
+        ordered = sorted(selected_indices)
+        text_parts: list[str] = []
+        images: list[ContentBlock] = []
+
+        for i in ordered:
+            chunk = all_chunks[i]
+            text_parts.append(chunk.text)
+            for img in chunk.images:
+                images.append(img)
+
+        return "\n\n".join(text_parts), images
+
+    def find_section(self, query: str) -> list[ContentBlock] | None:
+        """Find blocks within a section by title or number match."""
         query_lower = query.strip().lower()
 
-        # Try exact match first
-        for section in self.paper.sections:
-            if section.title.strip().lower() == query_lower:
-                return section
+        # Find matching heading block
+        heading_idx: int | None = None
+        heading_level: int = 0
 
-        # Try title contains query
-        for section in self.paper.sections:
-            if query_lower in section.title.strip().lower():
-                return section
+        for i, b in enumerate(self.paper.blocks):
+            if b.level > 0 and query_lower in b.text.strip().lower():
+                heading_idx = i
+                heading_level = b.level
+                break
 
-        # Try query contains section number (e.g. "what does 2.1 say")
-        for section in self.paper.sections:
-            title_lower = section.title.strip().lower()
-            if title_lower and title_lower.split()[0] in query_lower:
-                return section
+        if heading_idx is None:
+            return None
 
-        return None
+        # Collect blocks from heading to next same-or-higher-level heading
+        result: list[ContentBlock] = []
+        for i in range(heading_idx, len(self.paper.blocks)):
+            b = self.paper.blocks[i]
+            if i > heading_idx and b.level > 0 and b.level <= heading_level:
+                break
+            result.append(b)
+
+        return result
 
     def get_overview(self) -> str:
         lines = [
@@ -36,15 +89,20 @@ class ConversationContext:
             "",
         ]
         if self.paper.abstract:
-            abstract_preview = self.paper.abstract[:500]
+            preview = self.paper.abstract[:500]
             if len(self.paper.abstract) > 500:
-                abstract_preview += "..."
-            lines.append(f"Abstract: {abstract_preview}")
+                preview += "..."
+            lines.append(f"Abstract: {preview}")
             lines.append("")
 
         lines.append("Sections:")
-        for section in self.paper.sections:
-            indent = "  " * (section.level - 1)
-            lines.append(f"{indent}{section.title}")
+        seen: set[str] = set()
+        for b in self.paper.blocks:
+            if b.level > 0:
+                title = b.text.strip()
+                if title not in seen:
+                    indent = "  " * (b.level - 1)
+                    lines.append(f"{indent}{title}")
+                    seen.add(title)
 
         return "\n".join(lines)

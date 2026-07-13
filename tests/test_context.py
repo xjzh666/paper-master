@@ -1,26 +1,24 @@
 from paper_reader.context import ConversationContext
-from paper_reader.parser import PaperDocument, Section
+from paper_reader.blocks import PaperDocument, ContentBlock, SemanticChunk, merge_blocks
 
 
 def make_paper() -> PaperDocument:
+    blocks = [
+        ContentBlock(type="text", text="1. Introduction", level=1, page_idx=0),
+        ContentBlock(type="text", text="Introduction text about the problem.", page_idx=0),
+        ContentBlock(type="text", text="2. Methods", level=1, page_idx=0),
+        ContentBlock(type="text", text="Methods text about the approach.", page_idx=1),
+        ContentBlock(type="text", text="We use a novel dataset called ReposVul.", page_idx=1),
+        ContentBlock(type="text", text="2.1 Dataset", level=2, page_idx=1),
+        ContentBlock(type="text", text="Dataset details with specific numbers.", page_idx=1),
+    ]
+    chunks = merge_blocks(blocks)
     return PaperDocument(
         filepath="test.pdf",
         title="Test Paper",
-        sections=[
-            Section(
-                title="1. Introduction", level=1,
-                text="Introduction text.", page_start=0, page_end=0,
-            ),
-            Section(
-                title="2. Methods", level=1,
-                text="Methods text.", page_start=1, page_end=1,
-            ),
-            Section(
-                title="2.1 Dataset", level=2,
-                text="Dataset details.", page_start=1, page_end=1,
-            ),
-        ],
         abstract="This is a test abstract.",
+        blocks=blocks,
+        chunks=chunks,
     )
 
 
@@ -44,31 +42,79 @@ def test_add_message_appends_to_history():
     assert ctx.history[1] == {"role": "assistant", "content": "Hi there"}
 
 
+def test_search_chunks_returns_relevant_results():
+    ctx = ConversationContext(make_paper())
+    chunks = ctx.search_chunks("dataset ReposVul", top_k=2)
+    assert len(chunks) >= 1
+    found = " ".join(c.text for c in chunks)
+    assert "ReposVul" in found or "dataset" in found.lower()
+
+
+def test_search_chunks_empty_query():
+    ctx = ConversationContext(make_paper())
+    chunks = ctx.search_chunks("")
+    assert isinstance(chunks, list)
+
+
+def test_search_chunks_no_chunks():
+    paper = PaperDocument(filepath="empty.pdf", blocks=[], chunks=[])
+    ctx = ConversationContext(paper)
+    chunks = ctx.search_chunks("hello")
+    assert chunks == []
+
+
+def test_build_context_returns_text_and_images():
+    ctx = ConversationContext(make_paper())
+    chunks = ctx.paper.chunks[:2]
+    text, images = ctx.build_context(chunks, window=1)
+    assert len(text) > 0
+    assert isinstance(images, list)
+
+
+def test_build_context_empty_chunks():
+    ctx = ConversationContext(make_paper())
+    text, images = ctx.build_context([], window=1)
+    assert text == ""
+    assert images == []
+
+
 def test_find_section_exact_match():
     ctx = ConversationContext(make_paper())
-    section = ctx.find_section("2. Methods")
-    assert section is not None
-    assert section.title == "2. Methods"
+    blocks = ctx.find_section("2. Methods")
+    assert blocks is not None
+    texts = [b.text for b in blocks]
+    assert any("Methods text" in t for t in texts)
 
 
 def test_find_section_partial_match():
     ctx = ConversationContext(make_paper())
-    section = ctx.find_section("Methods")
-    assert section is not None
-    assert "Methods" in section.title
+    blocks = ctx.find_section("Methods")
+    assert blocks is not None
+    texts = [b.text for b in blocks]
+    assert any("Methods text" in t for t in texts)
 
 
 def test_find_section_no_match():
     ctx = ConversationContext(make_paper())
-    section = ctx.find_section("Conclusion")
-    assert section is None
+    blocks = ctx.find_section("Conclusion")
+    assert blocks is None
 
 
 def test_find_section_by_number():
     ctx = ConversationContext(make_paper())
-    section = ctx.find_section("2.1")
-    assert section is not None
-    assert section.title == "2.1 Dataset"
+    blocks = ctx.find_section("2.1")
+    assert blocks is not None
+    texts = [b.text for b in blocks]
+    assert any("Dataset details" in t for t in texts)
+
+
+def test_find_section_does_not_leak_to_next():
+    ctx = ConversationContext(make_paper())
+    blocks = ctx.find_section("2. Methods")
+    assert blocks is not None
+    # Should NOT contain the Introduction text
+    all_text = " ".join(b.text for b in blocks)
+    assert "Introduction text" not in all_text
 
 
 def test_get_overview():
