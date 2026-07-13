@@ -1,7 +1,7 @@
 import sys
 from pathlib import Path
 
-from paper_reader.parser import parse_pdf, Section, ImageBlock
+from paper_reader.mineru_parser import MinerUParser
 from paper_reader.llm import load_config, LLMRouter
 from paper_reader.context import ConversationContext
 
@@ -21,7 +21,7 @@ Commands:
   /help      - Show this help
   /quit      - Exit
 
-You can also just type a question about the paper.
+You can ask questions about the paper content directly.
 Refer to sections by number (e.g., "What does section 2.1 say?")
 """)
 
@@ -31,47 +31,59 @@ def handle_question(
 ) -> str:
     ctx.add_message("user", question)
 
-    # Try to find which section the user is asking about
-    section = ctx.find_section(question)
-
-    if section is None:
-        # General question — use full paper content
-        all_text = ""
-        all_images = []
-        for s in ctx.paper.sections:
-            all_text += f"\n\n## {s.title}\n{s.text}"
-            all_images.extend(img.image_bytes for img in s.images)
-        section = Section(
-            title="Full Paper", level=0, text=all_text,
-            page_start=0, page_end=999, images=[
-                ImageBlock(page=0, bbox=(0, 0, 0, 0), image_bytes=b)
-                for b in all_images
-            ],
+    # Try section lookup first (explicit section reference)
+    blocks = ctx.find_section(question)
+    if blocks is not None:
+        # Build a temporary chunk list from these blocks for build_context
+        from paper_reader.blocks import SemanticChunk
+        chunk = SemanticChunk(
+            chunk_id="section_match", text="\n".join(b.text for b in blocks),
+            blocks=blocks, section_path=[],
         )
+        for b in blocks:
+            if b.type in ("image", "table"):
+                chunk.images.append(b)
+        text, images = ctx.build_context([chunk], window=0)
+    else:
+        # TF-IDF chunk search
+        chunks = ctx.search_chunks(question, top_k=3)
+        if not chunks:
+            # Fallback: use all chunks
+            chunks = ctx.paper.chunks[:5]
+        text, images = ctx.build_context(chunks, window=2)
 
-    answer = router.answer(section, question, ctx.history[:-1])
+    # Load image bytes
+    image_bytes_list: list[bytes] = []
+    for img_block in images:
+        data = img_block.load_image("")
+        if data:
+            image_bytes_list.append(data)
+
+    answer = router.answer(
+        text=text, images=image_bytes_list, question=question,
+        history=ctx.history[:-1], title=ctx.paper.title,
+    )
     ctx.add_message("assistant", answer)
     return answer
 
 
 def interactive_loop(paper_path: str) -> None:
-    # Load config
     try:
         config = load_config("config.yaml")
     except FileNotFoundError:
         print("Error: config.yaml not found. Copy config.example.yaml to config.yaml and edit it.")
         sys.exit(1)
 
-    # Parse PDF
     print(f"\nLoading paper: {paper_path}...")
     try:
-        paper = parse_pdf(paper_path)
+        parser = MinerUParser()
+        paper = parser.parse(paper_path)
     except Exception as e:
         print(f"Error parsing PDF: {e}")
         sys.exit(1)
 
-    if not paper.sections:
-        print("Warning: No sections detected in this PDF. You can still ask questions.")
+    if not paper.blocks:
+        print("Warning: No content detected in this PDF. You can still ask questions.")
 
     ctx = ConversationContext(paper)
     router = LLMRouter(config)

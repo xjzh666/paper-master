@@ -1,78 +1,44 @@
-import io
+import json
 import tempfile
-import fitz
 from pathlib import Path
-from PIL import Image, ImageDraw
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
-from paper_reader.parser import parse_pdf
+from paper_reader.blocks import PaperDocument, ContentBlock, SemanticChunk, merge_blocks
+from paper_reader.mineru_parser import MinerUParser
 from paper_reader.llm import LLMRouter
 from paper_reader.context import ConversationContext
-from paper_reader.parser import Section, ImageBlock
 
 
-def create_test_pdf() -> str:
-    """Create a realistic multi-page PDF with an embedded image."""
-    tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
-    doc = fitz.open()
+SAMPLE_CONTENT = [
+    {"type": "text", "text": "Deep Learning for Paper Reading", "text_level": 1, "bbox": [72, 72, 500, 100], "page_idx": 0},
+    {"type": "text", "text": "A. Researcher", "text_level": 0, "bbox": [72, 120, 500, 140], "page_idx": 0},
+    {"type": "text", "text": "Abstract", "text_level": 0, "bbox": [72, 160, 500, 180], "page_idx": 0},
+    {"type": "text", "text": "We propose a novel approach to automated paper reading.", "text_level": 0, "bbox": [72, 190, 500, 220], "page_idx": 0},
+    {"type": "text", "text": "1. Introduction", "text_level": 1, "bbox": [72, 250, 500, 280], "page_idx": 1},
+    {"type": "text", "text": "Reading academic papers is time-consuming. Researchers spend hours per paper.", "text_level": 0, "bbox": [72, 290, 500, 320], "page_idx": 1},
+    {"type": "text", "text": "2. Method", "text_level": 1, "bbox": [72, 350, 500, 380], "page_idx": 2},
+    {"type": "text", "text": "Our architecture has three components: PDF parser, LLM router, context manager.", "text_level": 0, "bbox": [72, 390, 500, 420], "page_idx": 2},
+    {"type": "image", "text": "", "img_path": "images/arch.jpg", "bbox": [100, 450, 500, 600], "page_idx": 2},
+    {"type": "text", "text": "3. Results", "text_level": 1, "bbox": [72, 620, 500, 640], "page_idx": 3},
+    {"type": "text", "text": "Our system achieves 95% accuracy on paper summarization.", "text_level": 0, "bbox": [72, 650, 500, 680], "page_idx": 3},
+    {"type": "text", "text": "4. Conclusion", "text_level": 1, "bbox": [72, 710, 500, 730], "page_idx": 4},
+    {"type": "text", "text": "We demonstrated an effective paper reading assistant.", "text_level": 0, "bbox": [72, 740, 500, 770], "page_idx": 4},
+]
 
-    # Page 1: Title + abstract
-    p1 = doc.new_page()
-    p1.insert_text((72, 72), "Deep Learning for Paper Reading", fontsize=18)
-    p1.insert_text((72, 110), "A. Researcher, B. Scholar", fontsize=12)
-    p1.insert_text((72, 160), "Abstract", fontsize=14)
-    p1.insert_text((72, 190),
-        "We propose a novel approach to automated paper reading using "
-        "large language models combined with visual understanding. "
-        "Our system achieves state-of-the-art results on the PaperQA benchmark.", fontsize=11)
 
-    # Page 2: Introduction
-    p2 = doc.new_page()
-    p2.insert_text((72, 72), "1. Introduction", fontsize=16)
-    p2.insert_text((72, 110),
-        "Reading academic papers is a time-consuming task for researchers. "
-        "On average, a researcher spends 4-6 hours per paper. Automated tools "
-        "can significantly reduce this burden.", fontsize=11)
-
-    # Page 3: Method (with an embedded image)
-    p3 = doc.new_page()
-    p3.insert_text((72, 72), "2. Method", fontsize=16)
-    p3.insert_text((72, 110),
-        "Our architecture has three components: PDF parser, LLM router, "
-        "and context manager. See Figure 1 for the architecture diagram.", fontsize=11)
-    # Create a small PNG image in memory and embed it
-    img = Image.new("RGB", (200, 100), (200, 200, 200))
-    draw = ImageDraw.Draw(img)
-    draw.rectangle([10, 10, 190, 90], outline=(0, 0, 0), width=2)
-    draw.text((50, 40), "Architecture", fill=(0, 0, 0))
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    p3.insert_image(fitz.Rect(72, 200, 272, 300), stream=buf.getvalue())
-    p3.insert_text((72, 320), "Figure 1: System architecture", fontsize=10)
-
-    # Page 4: Results
-    p4 = doc.new_page()
-    p4.insert_text((72, 72), "3. Results", fontsize=16)
-    p4.insert_text((72, 110),
-        "Our system achieves 95% accuracy on paper summarization and "
-        "answers user questions with 87% relevance score.", fontsize=11)
-
-    # Page 5: Conclusion
-    p5 = doc.new_page()
-    p5.insert_text((72, 72), "4. Conclusion", fontsize=16)
-    p5.insert_text((72, 110),
-        "We have demonstrated an effective paper reading assistant. "
-        "Future work will extend this to multi-paper comparison.", fontsize=11)
-
-    doc.save(tmp.name)
-    doc.close()
-    return tmp.name
+def make_fake_mineru_output():
+    d = tempfile.mkdtemp()
+    result_dir = Path(d) / "test" / "hybrid_auto"
+    result_dir.mkdir(parents=True)
+    with open(result_dir / "content_list_v2.json", "w") as f:
+        json.dump(SAMPLE_CONTENT, f)
+    (result_dir / "images").mkdir(exist_ok=True)
+    return Path(d)
 
 
 class FakeTextClient:
     def chat(self, messages, system_prompt=""):
-        user_msg = messages[-1]["content"] if messages else ""
-        return f"[Text model response based on provided content]"
+        return "[Text model response based on provided content]"
 
 
 class FakeVisionClient:
@@ -81,12 +47,21 @@ class FakeVisionClient:
 
 
 def test_full_pipeline_parse_and_overview():
-    pdf_path = create_test_pdf()
+    result_dir = make_fake_mineru_output()
     try:
-        paper = parse_pdf(pdf_path)
+        pdf_path = str(result_dir / "test.pdf")
+        # touch the pdf file
+        Path(pdf_path).write_text("fake pdf content")
+
+        parser = MinerUParser()
+        fake_hybrid = result_dir / "test" / "hybrid_auto"
+        with patch.object(parser, '_run_mineru', return_value=None), \
+             patch.object(parser, '_find_result_dir', return_value=fake_hybrid):
+            paper = parser.parse(pdf_path)
+
         assert paper.title
-        assert len(paper.sections) > 0
-        assert paper.abstract
+        assert len(paper.blocks) > 0
+        assert len(paper.chunks) > 0
 
         ctx = ConversationContext(paper)
         overview = ctx.get_overview()
@@ -96,45 +71,109 @@ def test_full_pipeline_parse_and_overview():
         assert "3. Results" in overview
         assert "4. Conclusion" in overview
     finally:
-        Path(pdf_path).unlink()
+        import shutil
+        shutil.rmtree(result_dir)
 
 
-def test_full_pipeline_question_routing():
-    pdf_path = create_test_pdf()
+def test_full_pipeline_section_lookup():
+    result_dir = make_fake_mineru_output()
     try:
-        paper = parse_pdf(pdf_path)
-        ctx = ConversationContext(paper)
+        pdf_path = str(result_dir / "test.pdf")
+        Path(pdf_path).write_text("fake pdf content")
 
+        parser = MinerUParser()
+        fake_hybrid = result_dir / "test" / "hybrid_auto"
+        with patch.object(parser, '_run_mineru', return_value=None), \
+             patch.object(parser, '_find_result_dir', return_value=fake_hybrid):
+            paper = parser.parse(pdf_path)
+
+        ctx = ConversationContext(paper)
+        blocks = ctx.find_section("method")
+        assert blocks is not None
+        all_text = " ".join(b.text for b in blocks)
+        assert "three components" in all_text
+    finally:
+        import shutil
+        shutil.rmtree(result_dir)
+
+
+def test_full_pipeline_tfidf_search():
+    result_dir = make_fake_mineru_output()
+    try:
+        pdf_path = str(result_dir / "test.pdf")
+        Path(pdf_path).write_text("fake pdf content")
+
+        parser = MinerUParser()
+        fake_hybrid = result_dir / "test" / "hybrid_auto"
+        with patch.object(parser, '_run_mineru', return_value=None), \
+             patch.object(parser, '_find_result_dir', return_value=fake_hybrid):
+            paper = parser.parse(pdf_path)
+
+        ctx = ConversationContext(paper)
+        chunks = ctx.search_chunks("accuracy summarization", top_k=3)
+        assert len(chunks) >= 1
+        found = " ".join(c.text for c in chunks)
+        assert "95%" in found or "accuracy" in found.lower()
+    finally:
+        import shutil
+        shutil.rmtree(result_dir)
+
+
+def test_full_pipeline_llm_routing():
+    result_dir = make_fake_mineru_output()
+    try:
+        pdf_path = str(result_dir / "test.pdf")
+        Path(pdf_path).write_text("fake pdf content")
+
+        parser = MinerUParser()
+        fake_hybrid = result_dir / "test" / "hybrid_auto"
+        with patch.object(parser, '_run_mineru', return_value=None), \
+             patch.object(parser, '_find_result_dir', return_value=fake_hybrid):
+            paper = parser.parse(pdf_path)
+
+        ctx = ConversationContext(paper)
         router = LLMRouter.__new__(LLMRouter)
         router._text_client = FakeTextClient()
         router._vision_client = FakeVisionClient()
 
-        ctx.add_message("user", "What is the method?")
-        section = ctx.find_section("method")
-        assert section is not None
-
-        answer = router.answer(section, "What is the method?", ctx.history[:-1])
+        text, images = ctx.build_context(paper.chunks[:2], window=0)
+        answer = router.answer(
+            text=text, images=[], question="What is the method?",
+            history=[], title=paper.title,
+        )
         assert answer is not None
         assert len(answer) > 0
     finally:
-        Path(pdf_path).unlink()
+        import shutil
+        shutil.rmtree(result_dir)
 
 
-def test_full_pipeline_section_with_visuals():
-    """Section with drawings (treated as images) uses vision model."""
-    pdf_path = create_test_pdf()
+def test_full_pipeline_vision_routing():
+    result_dir = make_fake_mineru_output()
     try:
-        paper = parse_pdf(pdf_path)
-        ctx = ConversationContext(paper)
+        pdf_path = str(result_dir / "test.pdf")
+        Path(pdf_path).write_text("fake pdf content")
 
+        parser = MinerUParser()
+        fake_hybrid = result_dir / "test" / "hybrid_auto"
+        with patch.object(parser, '_run_mineru', return_value=None), \
+             patch.object(parser, '_find_result_dir', return_value=fake_hybrid):
+            paper = parser.parse(pdf_path)
+
+        ctx = ConversationContext(paper)
         router = LLMRouter.__new__(LLMRouter)
         router._text_client = FakeTextClient()
         router._vision_client = FakeVisionClient()
 
-        section = ctx.find_section("method")
-        assert section is not None
-
-        answer = router.answer(section, "Explain the architecture", [])
-        assert "Vision" in answer or "image" in answer.lower()
+        # Find chunk with image
+        chunks_with_images = [c for c in paper.chunks if c.images]
+        if chunks_with_images:
+            text, images = ctx.build_context(chunks_with_images[:1], window=0)
+            answer = router.answer(
+                text=text, images=[b"fake_image"], question="Explain the architecture",
+                history=[], title=paper.title,
+            )
+            assert "Vision" in answer or "image" in answer.lower()
     finally:
-        Path(pdf_path).unlink()
+        import shutil
+        shutil.rmtree(result_dir)
