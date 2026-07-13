@@ -98,14 +98,10 @@ def test_router_uses_text_model_when_no_images():
     router._text_client = text_client
     router._vision_client = vision_client
 
-    section = Section(
-        title="Methods",
-        level=1,
-        text="Some text content",
-        page_start=0,
-        page_end=0,
+    result = router.answer(
+        text="Some text content", images=[], question="What method?",
+        history=[], title="Methods",
     )
-    result = router.answer(section, "What method?", [])
 
     assert len(text_client.calls) == 1
     assert len(vision_client.calls) == 0
@@ -118,15 +114,10 @@ def test_router_uses_vision_model_when_images_present():
     router._text_client = text_client
     router._vision_client = vision_client
 
-    section = Section(
-        title="Results",
-        level=1,
-        text="Some text",
-        page_start=0,
-        page_end=0,
-        images=[MagicMock(image_bytes=b"fake_image")],
+    result = router.answer(
+        text="Some text", images=[b"fake_image"], question="Show results",
+        history=[], title="Results",
     )
-    result = router.answer(section, "Show results", [])
 
     assert len(vision_client.calls) == 1
 
@@ -138,14 +129,10 @@ def test_router_formats_section_content():
     router._text_client = text_client
     router._vision_client = vision_client
 
-    section = Section(
-        title="2. Methods",
-        level=1,
-        text="Method text here.",
-        page_start=1,
-        page_end=2,
+    result = router.answer(
+        text="Method text here.", images=[], question="What is the method?",
+        history=[], title="2. Methods",
     )
-    result = router.answer(section, "What is the method?", [])
 
     call_messages = text_client.calls[0][1]
     user_message = call_messages[-1]["content"]
@@ -193,3 +180,57 @@ def test_llm_router_constructor_raises_on_missing_keys():
     }
     with pytest.raises(ValueError):
         LLMRouter(config)
+
+
+def test_router_answer_text_only():
+    from paper_reader.llm import LLMRouter
+
+    class FakeText:
+        def chat(self, messages, system_prompt=""):
+            return "text response"
+
+    class FakeVision:
+        def chat_with_images(self, text, images, system_prompt=""):
+            return "vision response"
+
+    router = LLMRouter.__new__(LLMRouter)
+    router._text_client = FakeText()
+    router._vision_client = FakeVision()
+
+    result = router.answer(
+        text="some content", images=[], question="what?",
+        history=[], title="Test",
+    )
+    assert result == "text response"
+
+
+def test_router_answer_with_images():
+    from paper_reader.llm import LLMRouter
+
+    class FakeText:
+        def chat(self, messages, system_prompt=""):
+            return "text response"
+
+    class FakeVision:
+        def chat_with_images(self, text, images, system_prompt=""):
+            return f"vision with {len(images)} images"
+
+    router = LLMRouter.__new__(LLMRouter)
+    router._text_client = FakeText()
+    router._vision_client = FakeVision()
+
+    result = router.answer(
+        text="content with figure", images=[b"img1", b"img2"],
+        question="explain", history=[], title="Test",
+    )
+    assert "2 images" in result
+
+
+def test_build_content_includes_title_and_question():
+    from paper_reader.llm import LLMRouter
+
+    router = LLMRouter.__new__(LLMRouter)
+    content = router._build_content("body text", "what is this?", "My Paper")
+    assert "My Paper" in content
+    assert "body text" in content
+    assert "what is this?" in content

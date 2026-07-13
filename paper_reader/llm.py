@@ -136,13 +136,12 @@ class LLMRouter:
         self._vision_client = create_client(config["models"]["vision"])
 
     def answer(
-        self, section: "Section", question: str, history: list[dict]
+        self, text: str, images: list[bytes], question: str,
+        history: list[dict], title: str = "",
     ) -> str:
-        content = self._build_content(section, question)
+        content = self._build_content(text, question, title)
 
-        if section.images or section.tables:
-            images = [img.image_bytes for img in section.images]
-            images += [t.image_bytes for t in section.tables]
+        if images:
             return self._vision_client.chat_with_images(
                 content, images, system_prompt=SYSTEM_PROMPT
             )
@@ -151,13 +150,13 @@ class LLMRouter:
         messages.append({"role": "user", "content": content})
         return self._text_client.chat(messages, system_prompt=SYSTEM_PROMPT)
 
-    def _build_content(self, section: "Section", question: str) -> str:
-        parts = [
-            f"Section: {section.title}",
-            f"Content:\n{section.text}",
-            "",
-            f"Question: {question}",
-        ]
+    def _build_content(self, text: str, question: str, title: str = "") -> str:
+        parts = []
+        if title:
+            parts.append(f'From "{title}":')
+        parts.append(text)
+        parts.append("")
+        parts.append(f"Question: {question}")
         return "\n".join(parts)
 
 
