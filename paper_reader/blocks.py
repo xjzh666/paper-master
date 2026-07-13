@@ -1,8 +1,6 @@
 # paper_reader/blocks.py
 from dataclasses import dataclass, field
 from pathlib import Path
-import hashlib
-import json
 
 
 @dataclass
@@ -157,8 +155,8 @@ def merge_blocks(blocks: list[ContentBlock]) -> list[SemanticChunk]:
         else:
             combined = "\n".join(current_text_parts)
             if estimate_tokens(combined) + estimate_tokens(block.text) > 480:
+                prev_text = combined
                 flush()
-                prev_text = "\n".join(current_text_parts) if current_text_parts else ""
                 overlap = take_last_tokens(prev_text, 64)
                 if overlap:
                     current_text_parts.append(overlap)

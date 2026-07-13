@@ -125,6 +125,10 @@ class TestMergeBlocks:
         assert len(chunks[1].text) > 0
         # The first chunk should match the first block
         assert chunks[0].text.strip() == ("word " * 200).strip()
+        # Verify overlap: words from end of chunk 0 should appear in chunk 1
+        chunk0_words = set(chunks[0].text.split())
+        chunk1_start_words = set(chunks[1].text.split()[:20])
+        assert chunk0_words & chunk1_start_words, "No overlap found between chunks"
 
 
 class TestPaperDocument:
