@@ -1,7 +1,50 @@
+import numpy as np
 import pytest
 import fitz
 import tempfile
 from pathlib import Path
+
+
+class _FakeModel:
+    """Fake embedding model: simple word-overlap vector, fast and semantic-ish.
+
+    Each dimension corresponds to a character bigram, so texts sharing words
+    get similar embeddings — just enough for tests to exercise the retrieval path.
+    """
+
+    _dim = 64
+
+    def encode(self, texts, batch_size=12, max_length=512):
+        if isinstance(texts, str):
+            texts = [texts]
+        n = len(texts)
+        dim = self._dim
+        vecs = np.zeros((n, dim), dtype=np.float32)
+        for i, t in enumerate(texts):
+            lower = t.lower()
+            for j in range(len(lower) - 1):
+                idx = (ord(lower[j]) + ord(lower[j + 1])) % dim
+                vecs[i, idx] += 1.0
+            norm = np.linalg.norm(vecs[i])
+            if norm > 0:
+                vecs[i] /= norm
+            else:
+                vecs[i, 0] = 1.0
+        return {"dense_vecs": vecs}
+
+
+@pytest.fixture(autouse=True)
+def mock_embedding_model(monkeypatch):
+    """Replace BGE-M3 with a fast fake model for all tests."""
+    fake = _FakeModel()
+
+    def fake_get_model():
+        return fake
+
+    monkeypatch.setattr(
+        "paper_reader.context._get_embedding_model", fake_get_model
+    )
+    monkeypatch.setattr("paper_reader.context._embedding_model", None)
 
 
 @pytest.fixture

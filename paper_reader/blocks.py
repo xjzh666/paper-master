@@ -55,6 +55,7 @@ class SemanticChunk:
             "chunk_id": self.chunk_id, "text": self.text,
             "block_indices": [],  # filled by PaperDocument.to_dict()
             "section_path": self.section_path,
+            "embedding": self.embedding,
         }
 
     @classmethod

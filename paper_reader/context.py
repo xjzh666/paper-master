@@ -1,6 +1,30 @@
-from sklearn.feature_extraction.text import TfidfVectorizer
+import hashlib
+import json
+from pathlib import Path
+
+import numpy as np
 
 from paper_reader.blocks import PaperDocument, ContentBlock, SemanticChunk
+
+CACHE_DIR = Path.home() / ".cache" / "paper-master"
+
+# Module-level singleton — loaded once, reused across ConversationContext instances
+_embedding_model = None
+
+
+# Prefer local modelscope cache, fall back to HuggingFace download
+import os as _os
+_MODEL_PATH = "/home/xiejiezhen/.cache/modelscope/models/BAAI--bge-m3/snapshots/master"
+if not _os.path.isdir(_MODEL_PATH):
+    _MODEL_PATH = "BAAI/bge-m3"
+
+
+def _get_embedding_model():
+    global _embedding_model
+    if _embedding_model is None:
+        from FlagEmbedding import BGEM3FlagModel
+        _embedding_model = BGEM3FlagModel(_MODEL_PATH, use_fp16=True)
+    return _embedding_model
 
 
 class ConversationContext:
@@ -8,11 +32,42 @@ class ConversationContext:
         self.paper = paper
         self.history: list[dict] = []
         self._chunk_texts: list[str] = [c.text for c in paper.chunks]
-        self._vectorizer: TfidfVectorizer | None = None
-        self._tfidf_matrix = None
-        if self._chunk_texts:
-            self._vectorizer = TfidfVectorizer(stop_words="english")
-            self._tfidf_matrix = self._vectorizer.fit_transform(self._chunk_texts)
+        self._embeddings: np.ndarray | None = None
+        self._ensure_embeddings()
+
+    def _ensure_embeddings(self):
+        if not self._chunk_texts:
+            return
+        # Reuse cached embeddings from previously parsed chunks
+        cached = [c.embedding for c in self.paper.chunks if c.embedding is not None]
+        if len(cached) == len(self.paper.chunks):
+            self._embeddings = np.array(cached)
+            return
+        # Encode all chunks with BGE-M3
+        model = _get_embedding_model()
+        result = model.encode(
+            self._chunk_texts,
+            batch_size=12,
+            max_length=512,
+        )
+        self._embeddings = result["dense_vecs"]
+        # Write back to chunks so they persist in cache JSON
+        for i, c in enumerate(self.paper.chunks):
+            c.embedding = self._embeddings[i].tolist()
+        # Persist updated paper (with embeddings) to cache
+        self._save_cache()
+
+    def _save_cache(self) -> None:
+        if not self.paper.filepath or not Path(self.paper.filepath).exists():
+            return
+        try:
+            with open(self.paper.filepath, "rb") as f:
+                key = hashlib.sha256(f.read()).hexdigest()
+            CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            with open(CACHE_DIR / f"{key}.json", "w") as f:
+                json.dump(self.paper.to_dict(), f, ensure_ascii=False, indent=2)
+        except (IOError, OSError):
+            pass
 
     def add_message(self, role: str, content: str) -> None:
         self.history.append({"role": role, "content": content})
@@ -23,13 +78,15 @@ class ConversationContext:
         if len(self.paper.chunks) <= top_k:
             return list(self.paper.chunks)
 
-        if self._vectorizer is None or self._tfidf_matrix is None:
+        if self._embeddings is None or self._embeddings.shape[0] == 0:
             return list(self.paper.chunks[:top_k])
 
-        from sklearn.metrics.pairwise import cosine_similarity
+        model = _get_embedding_model()
+        query_emb = model.encode(
+            [query], batch_size=1, max_length=512
+        )["dense_vecs"][0]
 
-        query_vec = self._vectorizer.transform([query])
-        similarities = cosine_similarity(query_vec, self._tfidf_matrix).flatten()
+        similarities = query_emb @ self._embeddings.T
         top_indices = similarities.argsort()[-top_k:][::-1]
 
         return [self.paper.chunks[i] for i in top_indices if similarities[i] > 0]

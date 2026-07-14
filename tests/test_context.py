@@ -63,6 +63,27 @@ def test_search_chunks_no_chunks():
     assert chunks == []
 
 
+def test_search_chunks_embeddings_cached():
+    """Chunks get embedding values after ConversationContext init."""
+    paper = make_paper()
+    ctx = ConversationContext(paper)
+    for c in paper.chunks:
+        assert c.embedding is not None, f"{c.chunk_id} should have embedding after init"
+        assert len(c.embedding) > 0
+
+
+def test_embeddings_reused_from_cache():
+    """Second init reuses embeddings from chunk cache, no re-encode."""
+    paper = make_paper()
+    # First init encodes and stores embeddings
+    ctx1 = ConversationContext(paper)
+    emb1 = paper.chunks[0].embedding
+    # Second init should reuse cached embeddings
+    ctx2 = ConversationContext(paper)
+    emb2 = paper.chunks[0].embedding
+    assert emb1 == emb2
+
+
 def test_build_context_returns_text_and_images():
     ctx = ConversationContext(make_paper())
     chunks = ctx.paper.chunks[:2]

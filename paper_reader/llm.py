@@ -143,10 +143,12 @@ class LLMRouter:
         content = self._build_content(text, question, title)
 
         if images:
+            print(f"  [路由: vision]")
             return self._vision_client.chat_with_images(
                 content, images, system_prompt=SYSTEM_PROMPT
             )
 
+        print(f"  [路由: text]")
         messages = list(history)
         messages.append({"role": "user", "content": content})
         return self._text_client.chat(messages, system_prompt=SYSTEM_PROMPT)
