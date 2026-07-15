@@ -27,6 +27,17 @@ def _get_embedding_model():
     return _embedding_model
 
 
+def _unload_embedding_model():
+    """Free GPU memory held by the embedding model. Called between batch runs."""
+    global _embedding_model
+    if _embedding_model is not None:
+        del _embedding_model
+        _embedding_model = None
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+
 class ConversationContext:
     def __init__(self, paper: PaperDocument):
         self.paper = paper
@@ -39,22 +50,25 @@ class ConversationContext:
         if not self._chunk_texts:
             return
         # Reuse cached embeddings from previously parsed chunks
-        cached = [c.embedding for c in self.paper.chunks if c.embedding is not None]
-        if len(cached) == len(self.paper.chunks):
-            self._embeddings = np.array(cached)
+        cached_emb = [c.embedding for c in self.paper.chunks if c.embedding is not None]
+        cached_sp = [c.lexical_weights for c in self.paper.chunks if c.lexical_weights is not None]
+        if len(cached_emb) == len(self.paper.chunks) and len(cached_sp) == len(self.paper.chunks):
+            self._embeddings = np.array(cached_emb)
             return
-        # Encode all chunks with BGE-M3
+        # Encode all chunks with BGE-M3 (dense + sparse)
         model = _get_embedding_model()
         result = model.encode(
             self._chunk_texts,
             batch_size=12,
             max_length=512,
+            return_dense=True,
+            return_sparse=True,
         )
-        self._embeddings = result["dense_vecs"]
-        # Write back to chunks so they persist in cache JSON
+        self._embeddings = result["dense_vecs"].astype(np.float32)
         for i, c in enumerate(self.paper.chunks):
             c.embedding = self._embeddings[i].tolist()
-        # Persist updated paper (with embeddings) to cache
+            lw = result["lexical_weights"][i]
+            c.lexical_weights = {str(k): float(v) for k, v in lw.items()}
         self._save_cache()
 
     def _save_cache(self) -> None:
@@ -82,14 +96,36 @@ class ConversationContext:
             return list(self.paper.chunks[:top_k])
 
         model = _get_embedding_model()
-        query_emb = model.encode(
-            [query], batch_size=1, max_length=512
-        )["dense_vecs"][0]
+        q_result = model.encode(
+            [query], batch_size=1, max_length=512,
+            return_dense=True, return_sparse=True,
+        )
+        query_emb = q_result["dense_vecs"][0]
+        query_sparse = q_result["lexical_weights"][0]
 
-        similarities = query_emb @ self._embeddings.T
-        top_indices = similarities.argsort()[-top_k:][::-1]
+        # Dense scores
+        dense_scores = query_emb @ self._embeddings.T
 
-        return [self.paper.chunks[i] for i in top_indices if similarities[i] > 0]
+        # Sparse scores via lexical matching
+        sparse_scores = np.zeros(len(self.paper.chunks), dtype=np.float32)
+        for i, c in enumerate(self.paper.chunks):
+            if c.lexical_weights is None:
+                continue
+            chunk_sparse = {int(k): v for k, v in c.lexical_weights.items()}
+            sparse_scores[i] = model.compute_lexical_matching_score(
+                query_sparse, chunk_sparse
+            )
+
+        # Hybrid: 0.5 dense + 0.5 sparse, normalize each to [0,1]
+        def _normalize(arr: np.ndarray) -> np.ndarray:
+            if arr.max() - arr.min() < 1e-9:
+                return np.ones_like(arr)
+            return (arr - arr.min()) / (arr.max() - arr.min())
+
+        hybrid = 0.5 * _normalize(dense_scores) + 0.5 * _normalize(sparse_scores)
+        top_indices = hybrid.argsort()[-top_k:][::-1]
+
+        return [self.paper.chunks[i] for i in top_indices if hybrid[i] > 0]
 
     def build_context(
         self, chunks: list[SemanticChunk], window: int = 2

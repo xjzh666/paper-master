@@ -2,6 +2,8 @@ import re
 import sys
 from pathlib import Path
 
+from prompt_toolkit import PromptSession
+
 from paper_reader.mineru_parser import MinerUParser
 from paper_reader.llm import load_config, LLMRouter
 from paper_reader.context import ConversationContext
@@ -98,9 +100,10 @@ def interactive_loop(paper_path: str) -> None:
     router = LLMRouter(config)
     show_overview(ctx)
 
+    session = PromptSession()
     while True:
         try:
-            user_input = input("\n> ").strip()
+            user_input = session.prompt("\n> ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\n再见！")
             break
@@ -138,24 +141,42 @@ def batch_parse(papers_dir: str) -> None:
         sys.exit(1)
 
     print(f"在 {papers_dir} 中找到 {len(pdf_files)} 个 PDF\n")
+
+    # ── Phase 1: MinerU parsing (VLM on GPU) ──
+    print("── 阶段 1/2: MinerU 版面解析 ──")
     parser = MinerUParser()
-    success = 0
-    failed = 0
+    parsed: list[PaperDocument] = []
+    phase1_ok = 0
+    phase1_fail = 0
 
     for i, pdf_path in enumerate(pdf_files, 1):
-        print(f"[{i}/{len(pdf_files)}] {pdf_path.name}")
+        print(f"  [{i}/{len(pdf_files)}] {pdf_path.name}")
         try:
             paper = parser.parse(str(pdf_path))
-            chunk_count = len(paper.chunks)
-            print(f"  成功 — {len(paper.blocks)} 个块, {chunk_count} 个语义块, "
+            parsed.append(paper)
+            phase1_ok += 1
+            print(f"    成功 — {len(paper.blocks)} 个块, {len(paper.chunks)} 个语义块, "
                   f"标题: {paper.title[:60]}")
-            success += 1
         except Exception as e:
-            print(f"  失败 — {e}")
-            failed += 1
+            phase1_fail += 1
+            print(f"    失败 — {e}")
         print()
 
-    print(f"完成: {success} 成功, {failed} 失败")
+    # ── Phase 2: BGE-M3 encoding (embedding model on GPU) ──
+    print("── 阶段 2/2: BGE-M3 向量编码 ──")
+    phase2_ok = 0
+    for paper in parsed:
+        print(f"  {Path(paper.filepath).name}")
+        try:
+            ctx = ConversationContext(paper)
+            embedded = sum(1 for c in paper.chunks if c.embedding)
+            phase2_ok += 1
+            print(f"    {len(paper.chunks)} 个语义块 ({embedded} 已编码)")
+        except Exception as e:
+            print(f"    编码失败 — {e}")
+        print()
+
+    print(f"完成: {phase1_ok} 解析, {phase1_fail} 失败 | {phase2_ok} 编码")
 
 
 def main():

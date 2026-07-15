@@ -1,6 +1,106 @@
 # paper_reader/blocks.py
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
+
+
+# ── Roman numeral handling ───────────────────────────────────────────
+
+_ROMAN_VALUES = {'I': 1, 'V': 5, 'X': 10, 'L': 50, 'C': 100}
+
+
+def _roman_to_int(s: str) -> int | None:
+    """Convert a Roman numeral string to integer. Returns None if invalid."""
+    if not s or not all(c in _ROMAN_VALUES for c in s.upper()):
+        return None
+    result = 0
+    prev = 0
+    for ch in reversed(s.upper()):
+        cur = _ROMAN_VALUES[ch]
+        result += -cur if cur < prev else cur
+        prev = cur
+    return result
+
+
+# ── Label normalization ──────────────────────────────────────────────
+
+# Matches: Fig. 1, Figure 3, TABLE I, Table 2, Algorithm 1
+_LABEL_RE = re.compile(
+    r'(Fig(?:ure)?|TABLE|Table|Algorithm)\s*\.?\s*([IVXLCDM]+|\d+)',
+    re.IGNORECASE,
+)
+
+
+def _normalize_label(text: str) -> tuple[str, list[str]]:
+    """Convert a figure/table/algorithm caption into (canonical_text, aliases).
+
+    Example:
+        "TABLE III FPA UNIVERSALITY..." →
+            ("TABLE III (Table 3) FPA UNIVERSALITY...",
+             ["TABLE III", "Table 3", "表3", "表 3"])
+    """
+    if not text:
+        return text, []
+
+    m = _LABEL_RE.match(text.strip())
+    if not m:
+        return text, []
+
+    prefix = m.group(1)       # e.g. "TABLE", "Fig", "Algorithm"
+    num_token = m.group(2)    # e.g. "III", "3"
+    original_label = m.group(0)
+
+    # Convert to Arabic integer
+    if num_token.isdigit():
+        num = int(num_token)
+    else:
+        num = _roman_to_int(num_token.upper())
+        if num is None:
+            return text, [original_label]
+
+    # Canonical English label (always Arabic numeral)
+    if prefix.lower().startswith('fig'):
+        canonical_en = f'Figure {num}'
+    elif prefix.upper() == 'TABLE':
+        canonical_en = f'Table {num}'
+    else:  # Algorithm
+        canonical_en = f'Algorithm {num}'
+
+    # Aliases (English + Chinese)
+    if prefix.lower().startswith('fig'):
+        aliases = [
+            original_label,
+            f'Fig. {num}',
+            f'Figure {num}',
+            f'Fig {num}',
+            f'图{num}',
+            f'图 {num}',
+        ]
+    elif prefix.upper() == 'TABLE':
+        aliases = [
+            original_label,
+            f'Table {num}',
+            f'表{num}',
+            f'表 {num}',
+        ]
+    else:  # Algorithm
+        aliases = [
+            original_label,
+            f'Algorithm {num}',
+            f'算法{num}',
+            f'算法 {num}',
+        ]
+
+    # Inject canonical label into text
+    canonical_text = text.replace(original_label, f'{original_label} ({canonical_en})', 1)
+
+    return canonical_text, aliases
+
+
+def _extract_label(text: str) -> str:
+    """Extract short label from figure/table caption, e.g. 'Fig. 1' from 'Fig. 1. Description.'."""
+    m = _LABEL_RE.match(text.strip()) if text else None
+    return m.group(0) if m else ""
 
 
 @dataclass
@@ -48,14 +148,21 @@ class SemanticChunk:
     blocks: list[ContentBlock]
     section_path: list[str]
     images: list[ContentBlock] = field(default_factory=list)
+    figure_labels: list[str] = field(default_factory=list)
+    aliases: list[str] = field(default_factory=list)
     embedding: list[float] | None = None
+    # Sparse lexical weights from BGE-M3, keyed by token id (str for JSON compat)
+    lexical_weights: dict[str, float] | None = None
 
     def to_dict(self) -> dict:
         return {
             "chunk_id": self.chunk_id, "text": self.text,
             "block_indices": [],  # filled by PaperDocument.to_dict()
             "section_path": self.section_path,
+            "figure_labels": self.figure_labels,
+            "aliases": self.aliases,
             "embedding": self.embedding,
+            "lexical_weights": self.lexical_weights,
         }
 
     @classmethod
@@ -64,7 +171,10 @@ class SemanticChunk:
             chunk_id=d["chunk_id"], text=d["text"],
             blocks=[blocks[i] for i in d.get("block_indices", [])],
             section_path=d.get("section_path", []),
+            figure_labels=d.get("figure_labels", []),
+            aliases=d.get("aliases", []),
             embedding=d.get("embedding"),
+            lexical_weights=d.get("lexical_weights"),
         )
         for b in chunk.blocks:
             if b.type in ("image", "table"):
@@ -120,6 +230,8 @@ def merge_blocks(blocks: list[ContentBlock]) -> list[SemanticChunk]:
     current_text_parts: list[str] = []
     current_blocks: list[ContentBlock] = []
     current_images: list[ContentBlock] = []
+    current_labels: list[str] = []
+    current_aliases: list[str] = []
     section_path: list[str] = []
     chunk_idx = 0
 
@@ -134,11 +246,15 @@ def merge_blocks(blocks: list[ContentBlock]) -> list[SemanticChunk]:
                     blocks=list(current_blocks),
                     section_path=list(section_path),
                     images=list(current_images),
+                    figure_labels=list(current_labels),
+                    aliases=sorted(set(current_aliases)),
                 ))
                 chunk_idx += 1
         current_text_parts.clear()
         current_blocks.clear()
         current_images.clear()
+        current_labels.clear()
+        current_aliases.clear()
 
     def take_last_tokens(text: str, n: int) -> str:
         words = text.split()
@@ -156,6 +272,13 @@ def merge_blocks(blocks: list[ContentBlock]) -> list[SemanticChunk]:
         elif block.type in ("image", "table"):
             current_images.append(block)
             current_blocks.append(block)
+            label = _extract_label(block.text)
+            if label:
+                current_labels.append(label)
+            if block.text.strip():
+                canonical_text, aliases = _normalize_label(block.text.strip())
+                current_text_parts.append(canonical_text)
+                current_aliases.extend(aliases)
         else:
             combined = "\n".join(current_text_parts)
             if estimate_tokens(combined) + estimate_tokens(block.text) > 480:

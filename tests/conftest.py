@@ -14,23 +14,39 @@ class _FakeModel:
 
     _dim = 64
 
-    def encode(self, texts, batch_size=12, max_length=512):
+    def encode(self, texts, batch_size=12, max_length=512,
+               return_dense=True, return_sparse=False, **kwargs):
         if isinstance(texts, str):
             texts = [texts]
         n = len(texts)
         dim = self._dim
         vecs = np.zeros((n, dim), dtype=np.float32)
+        sparse_weights: list[dict] = []
         for i, t in enumerate(texts):
             lower = t.lower()
+            token_weights: dict[int, float] = {}
             for j in range(len(lower) - 1):
                 idx = (ord(lower[j]) + ord(lower[j + 1])) % dim
                 vecs[i, idx] += 1.0
+                token_weights[idx] = token_weights.get(idx, 0.0) + 0.1
             norm = np.linalg.norm(vecs[i])
             if norm > 0:
                 vecs[i] /= norm
             else:
                 vecs[i, 0] = 1.0
-        return {"dense_vecs": vecs}
+            sparse_weights.append(token_weights)
+        result = {}
+        if return_dense:
+            result["dense_vecs"] = vecs
+        if return_sparse:
+            result["lexical_weights"] = sparse_weights
+        return result
+
+    def compute_lexical_matching_score(self, q_weights: dict, d_weights: dict) -> float:
+        score = 0.0
+        for tid, w in q_weights.items():
+            score += w * d_weights.get(tid, 0.0)
+        return score
 
 
 @pytest.fixture(autouse=True)
