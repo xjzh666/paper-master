@@ -125,6 +125,7 @@ class OpenAIClient(LLMClient):
         self, messages: list[dict], tools: list[dict],
         system_prompt: str = "",
     ):
+        import time
         from paper_reader.agent import LLMToolResponse
 
         api_messages = []
@@ -132,13 +133,24 @@ class OpenAIClient(LLMClient):
             api_messages.append({"role": "system", "content": system_prompt})
         api_messages.extend(messages)
 
-        response = self._client.chat.completions.create(
-            model=self.model,
-            messages=api_messages,
-            tools=tools if tools else None,
-            tool_choice="auto" if tools else None,
-            max_tokens=4096,
-        )
+        last_error = None
+        for attempt in range(3):
+            try:
+                response = self._client.chat.completions.create(
+                    model=self.model,
+                    messages=api_messages,
+                    tools=tools if tools else None,
+                    tool_choice="auto" if tools else None,
+                    max_tokens=4096,
+                )
+                break
+            except Exception as e:
+                last_error = e
+                if attempt < 2:
+                    time.sleep(2 ** attempt)
+
+        if last_error is not None:
+            raise last_error
 
         msg = response.choices[0].message
         tool_calls = []
