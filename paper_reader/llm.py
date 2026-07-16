@@ -140,6 +140,7 @@ class LLMRouter:
 
     def _format_memory(self, memory: PaperMemory) -> str:
         """Serialize PaperMemory for injection into system prompt."""
+        # Note: keywords intentionally omitted — reserved for future multi-paper routing
         lines = ["[当前论文记忆]"]
         fields = [
             ("研究问题", memory.research_problem),
