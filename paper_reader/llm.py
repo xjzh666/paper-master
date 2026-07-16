@@ -2,6 +2,8 @@ from abc import ABC, abstractmethod
 
 import yaml
 
+from paper_reader.blocks import PaperMemory
+
 
 def load_config(path: str = "config.yaml") -> dict:
     with open(path) as f:
@@ -136,22 +138,47 @@ class LLMRouter:
         self._text_client = create_client(config["models"]["text"])
         self._vision_client = create_client(config["models"]["vision"])
 
+    def _format_memory(self, memory: PaperMemory) -> str:
+        """Serialize PaperMemory for injection into system prompt."""
+        lines = ["[当前论文记忆]"]
+        fields = [
+            ("研究问题", memory.research_problem),
+            ("动机", memory.motivation),
+            ("核心方法", memory.method),
+            ("方法设计原理", memory.method_why),
+            ("实验设计", memory.experiments),
+            ("关键结果", memory.key_results),
+            ("核心贡献", memory.contributions),
+            ("局限性", memory.limitations),
+            ("要点总结", memory.takeaways),
+        ]
+        for label, value in fields:
+            if value and value != "未提及":
+                lines.append(f"- {label}: {value}")
+        return "\n".join(lines)
+
     def answer(
         self, text: str, images: list[bytes], question: str,
         history: list[dict], title: str = "",
+        memory: PaperMemory | None = None,
     ) -> str:
         content = self._build_content(text, question, title)
+
+        # Build system prompt with optional memory
+        system = SYSTEM_PROMPT
+        if memory is not None:
+            system = system + "\n\n" + self._format_memory(memory)
 
         if images:
             print(f"  [路由: vision]")
             return self._vision_client.chat_with_images(
-                content, images, system_prompt=SYSTEM_PROMPT
+                content, images, system_prompt=system
             )
 
         print(f"  [路由: text]")
         messages = list(history)
         messages.append({"role": "user", "content": content})
-        return self._text_client.chat(messages, system_prompt=SYSTEM_PROMPT)
+        return self._text_client.chat(messages, system_prompt=system)
 
     def _build_content(self, text: str, question: str, title: str = "") -> str:
         parts = []
