@@ -170,24 +170,8 @@ class LLMRouter:
         self._vision_client = create_client(config["models"]["vision"])
 
     def _format_memory(self, memory: PaperMemory) -> str:
-        """Serialize PaperMemory for injection into system prompt."""
-        # Note: keywords intentionally omitted — reserved for future multi-paper routing
-        lines = ["[当前论文记忆]"]
-        fields = [
-            ("研究问题", memory.research_problem),
-            ("动机", memory.motivation),
-            ("核心方法", memory.method),
-            ("方法设计原理", memory.method_why),
-            ("实验设计", memory.experiments),
-            ("关键结果", memory.key_results),
-            ("核心贡献", memory.contributions),
-            ("局限性", memory.limitations),
-            ("要点总结", memory.takeaways),
-        ]
-        for label, value in fields:
-            if value and value != "未提及":
-                lines.append(f"- {label}: {value}")
-        return "\n".join(lines)
+        from paper_reader.agent import _format_memory
+        return _format_memory(memory)
 
     def answer(
         self, text: str, images: list[bytes], question: str,

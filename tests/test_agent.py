@@ -226,6 +226,7 @@ def test_search_paper_includes_image_resources():
     result = search_fn(query="architecture")
     assert len(result.resources) == 1
     assert result.resources[0].type == "image"
+    assert "image_0_0" in result.text  # resource ID exposed to LLM
 
 
 def test_tool_parameters_are_valid_json_schema():
@@ -339,7 +340,7 @@ def test_agent_describe_image_flow():
         LLMToolResponse(tool_calls=[{
             "id": "call_2",
             "name": "describe_image",
-            "arguments": '{"resource_id":"img_0_0"}',
+            "arguments": '{"resource_id":"image_0_0"}',
         }]),
         LLMToolResponse(text="架构图展示了..."),
     ])
@@ -350,6 +351,7 @@ def test_agent_describe_image_flow():
     answer = agent.run(question="描述一下架构图", history=[])
     assert "架构" in answer
     assert len(text_client.calls) == 3
+    assert len(vision.calls) == 1
 
     import shutil
     shutil.rmtree(tmpdir, ignore_errors=True)

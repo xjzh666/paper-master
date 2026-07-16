@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from paper_reader.blocks import PaperMemory, ContentBlock
+from paper_reader.blocks import PaperMemory
 
 
 @dataclass
@@ -84,10 +84,16 @@ def _make_tools(ctx, vision_client, resources_store: dict) -> list[Tool]:
         resources = []
         for i, img in enumerate(image_blocks):
             if img.image_path:
-                rid = f"img_{img.page_idx}_{i}"
+                rid = f"{img.type}_{img.page_idx}_{i}"
                 full_path = str(Path(ctx.paper.result_dir) / img.image_path)
-                r = Resource(type="image", id=rid, path=full_path, caption=img.text or "")
+                r = Resource(type=img.type, id=rid, path=full_path, caption=img.text or "")
                 resources.append(r)
+                resources_store[rid] = r
+        if resources:
+            lines = [text, "", "可用资源:"]
+            for r in resources:
+                lines.append(f"  [{r.id}] {r.caption or r.type}")
+            text = "\n".join(lines)
         return ToolResult(text=text, resources=resources)
 
     def get_section(reference: str) -> ToolResult:
@@ -105,6 +111,12 @@ def _make_tools(ctx, vision_client, resources_store: dict) -> list[Tool]:
                 full_path = str(Path(ctx.paper.result_dir) / b.image_path)
                 r = Resource(type=b.type, id=rid, path=full_path, caption=b.text or "")
                 resources.append(r)
+                resources_store[rid] = r
+        if resources:
+            lines = [text, "", "可用资源:"]
+            for r in resources:
+                lines.append(f"  [{r.id}] {r.caption or r.type}")
+            text = "\n".join(lines)
         return ToolResult(text=text, resources=resources)
 
     def describe_image(resource_id: str) -> ToolResult:
