@@ -203,7 +203,6 @@ def batch_parse(papers_dir: str) -> None:
     phase3_ok = 0
     if config:
         from paper_reader.llm import create_client
-        from paper_reader.memory import extract_memory, load_memory_cache
         text_client = create_client(config["models"]["text"])
         for paper in parsed:
             print(f"  {Path(paper.filepath).name}")
