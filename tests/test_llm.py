@@ -232,3 +232,90 @@ def test_build_content_includes_title_and_question():
     assert "My Paper" in content
     assert "body text" in content
     assert "what is this?" in content
+
+
+def test_router_injects_memory_into_system_prompt():
+    """When memory is provided, it should appear in the system prompt."""
+    from paper_reader.blocks import PaperMemory
+
+    class FakeText:
+        def chat(self, messages, system_prompt=""):
+            return system_prompt  # Return the system prompt for inspection
+
+    class FakeVision:
+        def chat_with_images(self, text, images, system_prompt=""):
+            return system_prompt
+
+    router = LLMRouter.__new__(LLMRouter)
+    router._text_client = FakeText()
+    router._vision_client = FakeVision()
+
+    memory = PaperMemory(
+        research_problem="如何测试？",
+        method="注入测试",
+        keywords=["test"],
+    )
+
+    result = router.answer(
+        text="content", images=[], question="q?",
+        history=[], title="T", memory=memory,
+    )
+
+    assert "当前论文记忆" in result
+    assert "如何测试？" in result
+    assert "注入测试" in result
+
+
+def test_router_skips_memory_when_none():
+    """When memory is None, system prompt should be the default."""
+    class FakeText:
+        def chat(self, messages, system_prompt=""):
+            return system_prompt
+
+    class FakeVision:
+        def chat_with_images(self, text, images, system_prompt=""):
+            return system_prompt
+
+    router = LLMRouter.__new__(LLMRouter)
+    router._text_client = FakeText()
+    router._vision_client = FakeVision()
+
+    result = router.answer(
+        text="content", images=[], question="q?",
+        history=[], title="T", memory=None,
+    )
+
+    assert "当前论文记忆" not in result
+
+
+def test_router_omits_weizhi_fields_in_memory():
+    """Fields with '未提及' should not appear in the formatted memory."""
+    from paper_reader.blocks import PaperMemory
+
+    class FakeText:
+        def chat(self, messages, system_prompt=""):
+            return system_prompt
+
+    class FakeVision:
+        def chat_with_images(self, text, images, system_prompt=""):
+            return system_prompt
+
+    router = LLMRouter.__new__(LLMRouter)
+    router._text_client = FakeText()
+    router._vision_client = FakeVision()
+
+    memory = PaperMemory(
+        research_problem="真实问题",
+        method="真实方法",
+        motivation="未提及",
+        experiments="未提及",
+    )
+
+    result = router.answer(
+        text="content", images=[], question="q?",
+        history=[], title="T", memory=memory,
+    )
+
+    assert "真实问题" in result
+    assert "动机" not in result
+    assert "实验设计" not in result
