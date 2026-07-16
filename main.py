@@ -1,4 +1,3 @@
-import re
 import sys
 from pathlib import Path
 
@@ -8,11 +7,6 @@ from paper_reader.mineru_parser import MinerUParser
 from paper_reader.llm import load_config, LLMRouter
 from paper_reader.context import ConversationContext
 from paper_reader.memory import extract_memory, load_memory_cache
-
-
-def _is_section_query(query: str) -> bool:
-    return bool(re.search(r'\bsection\b', query.lower())) or \
-           bool(re.search(r'\b\d+(\.\d+)+\b', query))
 
 
 def show_overview(ctx: ConversationContext) -> None:
@@ -43,37 +37,15 @@ def handle_question(
 ) -> str:
     ctx.add_message("user", question)
 
-    # Try section lookup only for explicit section references
-    blocks = ctx.find_section(question) if _is_section_query(question) else None
-    if blocks is not None:
-        # Build a temporary chunk list from these blocks for build_context
-        from paper_reader.blocks import SemanticChunk
-        chunk = SemanticChunk(
-            chunk_id="section_match", text="\n".join(b.text for b in blocks),
-            blocks=blocks, section_path=[],
-        )
-        for b in blocks:
-            if b.type in ("image", "table"):
-                chunk.images.append(b)
-        text, images = ctx.build_context([chunk], window=0)
-    else:
-        # TF-IDF chunk search
-        chunks = ctx.search_chunks(question, top_k=3)
-        if not chunks:
-            # Fallback: use all chunks
-            chunks = ctx.paper.chunks[:5]
-        text, images = ctx.build_context(chunks, window=2)
-
-    # Load image bytes
-    image_bytes_list: list[bytes] = []
-    for img_block in images:
-        data = img_block.load_image(ctx.paper.result_dir)
-        if data:
-            image_bytes_list.append(data)
-
-    answer = router.answer(
-        text=text, images=image_bytes_list, question=question,
-        history=ctx.history[:-1], title=ctx.paper.title,
+    from paper_reader.agent import PaperAgent
+    agent = PaperAgent(
+        text_client=router._text_client,
+        vision_client=router._vision_client,
+        ctx=ctx,
+    )
+    answer = agent.run(
+        question=question,
+        history=ctx.history[:-1],
         memory=ctx.paper.memory,
     )
     ctx.add_message("assistant", answer)

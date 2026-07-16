@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 from paper_reader.context import ConversationContext
 from paper_reader.blocks import PaperDocument, ContentBlock, SemanticChunk, merge_blocks
 from paper_reader.llm import LLMRouter
+from paper_reader.agent import PaperAgent
 from main import handle_question, batch_parse
 
 
@@ -26,29 +27,34 @@ def make_paper():
     )
 
 
-def test_handle_question_finds_section_and_answers():
+def test_handle_question_uses_agent():
     ctx = ConversationContext(make_paper())
     router = MagicMock()
-    router.answer.return_value = "This is the answer."
+    router._text_client = MagicMock()
+    router._vision_client = MagicMock()
 
-    question = "methods"
-    answer = handle_question(question, ctx, router)
+    with patch.object(PaperAgent, "run", return_value="Agent answer.") as mock_run:
+        question = "methods"
+        answer = handle_question(question, ctx, router)
 
-    router.answer.assert_called_once()
-    assert answer == "This is the answer."
-    assert len(ctx.history) >= 2  # user + assistant messages
+        mock_run.assert_called_once()
+        assert answer == "Agent answer."
+        assert len(ctx.history) >= 2
 
 
-def test_handle_question_general_without_section():
+def test_handle_question_passes_memory_to_agent():
     ctx = ConversationContext(make_paper())
+    ctx.paper.memory = MagicMock()
     router = MagicMock()
-    router.answer.return_value = "General answer."
+    router._text_client = MagicMock()
+    router._vision_client = MagicMock()
 
-    question = "overview of the paper"
-    answer = handle_question(question, ctx, router)
+    with patch.object(PaperAgent, "run", return_value="Memory-aware answer.") as mock_run:
+        question = "what is this about"
+        answer = handle_question(question, ctx, router)
 
-    router.answer.assert_called_once()
-    assert answer == "General answer."
+        assert mock_run.call_args[1]["memory"] is ctx.paper.memory
+        assert answer == "Memory-aware answer."
 
 
 def test_batch_parse_no_pdfs(tmp_path):
