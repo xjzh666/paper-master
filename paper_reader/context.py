@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -156,16 +157,20 @@ class ConversationContext:
 
         return "\n\n".join(text_parts), images
 
+    @staticmethod
+    def _strip_html(text: str) -> str:
+        return re.sub(r'<[^>]+>', '', text)
+
     def find_section(self, query: str) -> list[ContentBlock] | None:
         """Find blocks within a section by title or number match."""
-        query_lower = query.strip().lower()
+        query_lower = self._strip_html(query.strip().lower())
 
         # Find matching heading block
         heading_idx: int | None = None
         heading_level: int = 0
 
         for i, b in enumerate(self.paper.blocks):
-            if b.level > 0 and query_lower in b.text.strip().lower():
+            if b.level > 0 and query_lower in self._strip_html(b.text.strip().lower()):
                 heading_idx = i
                 heading_level = b.level
                 break
