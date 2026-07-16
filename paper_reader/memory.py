@@ -69,7 +69,7 @@ def _load_markdown(paper: PaperDocument) -> str:
     """Load MinerU-generated markdown, fall back to blocks text."""
     result_dir = Path(paper.result_dir) if paper.result_dir else None
     if result_dir and result_dir.exists():
-        md_files = list(result_dir.glob("*.md"))
+        md_files = sorted(result_dir.glob("*.md"))
         if md_files:
             return md_files[0].read_text()
     # Fallback: concat blocks in order (no overlap)
@@ -87,10 +87,13 @@ def _parse_json_response(raw: str) -> dict:
     m = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', raw)
     if m:
         return json.loads(m.group(1))
-    # Try to find first { ... } span
-    m = re.search(r'\{[\s\S]*\}', raw)
-    if m:
-        return json.loads(m.group(0))
+    # Try to find { ... } spans (non-greedy), try each until one parses
+    for m in re.finditer(r'\{[\s\S]*?\}', raw):
+        candidate = m.group(0)
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
     raise ValueError(f"Failed to parse JSON from LLM response: {raw[:200]}")
 
 
