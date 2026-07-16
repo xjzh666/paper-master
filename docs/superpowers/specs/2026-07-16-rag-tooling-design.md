@@ -36,16 +36,21 @@
 
 ```python
 @dataclass
-class Attachment:
+class Resource:
+    """工具返回的资源引用，只存索引不存数据，避免上下文膨胀。"""
     type: str              # "image" | "table"
     id: str                # "img_3", "table_2"
-    data: bytes            # 图片二进制
+    path: str              # 文件路径，describe_image 时才加载
     caption: str           # 图注 / 周边文本
+
+    def load_data(self) -> bytes:
+        """懒加载：调用时才读文件。"""
+        ...
 
 @dataclass
 class ToolResult:
     text: str
-    attachments: list[Attachment]
+    resources: list[Resource]   # 资源引用列表
 
 @dataclass
 class LLMToolResponse:
@@ -62,23 +67,26 @@ class Tool:
 
 ## 工具
 
+工具描述中强化规则：返回结果可能包含图片/表格资源引用（`resources` 字段），涉及图表内容时需调用 `describe_image` 解析。
+
 ### search_paper
 
 - 参数: `query: str`
 - 内部: `ctx.search_chunks(query, top_k=3)` → `ctx.build_context(chunks, window=2)`
-- 返回: `ToolResult` (text + images/table attachments)
+- 返回: `ToolResult` (text + resources，含图片/表格的资源引用)
 - top_k、window 由工具内部管理，Agent 不感知
 
 ### get_section
 
 - 参数: `reference: str`（章节编号 "3.2" 或标题关键词 "Experiments"）
 - 内部: `ctx.find_section(reference)` → 收集该节全部文本
-- 返回: `ToolResult` (text + 该节内 images/table attachments)
+- 截断: 超过 3000 字截断，尾部标注 `[已截断，原文共 N 字，请用更具体的 reference 缩小范围]`
+- 返回: `ToolResult` (text + 该节内 images/table 的资源引用)
 
 ### describe_image
 
-- 参数: `attachment_id: str`
-- 内部: 根据 id 从上下文找到图片二进制 → 调用 vision 模型
+- 参数: `resource_id: str`
+- 内部: 根据 id 找到 Resource，调用 `resource.load_data()` 加载图片二进制 → 调 vision 模型
 - 返回: `str`（图片内容描述）
 - vision 模型只做图片内容提取，不参与最终回答
 
@@ -90,12 +98,17 @@ class Tool:
 2. system_prompt = SYSTEM_PROMPT + memory 注入
 3. 调用 `text_client.chat_with_tools(messages, tools, system_prompt)`
 4. 如果 LLM 返回 text（无 tool_calls）→ 返回 text
-5. 如果 LLM 返回 tool_calls → 逐个执行（并行调用一起执行）
+5. 如果 LLM 返回 tool_calls → 并行执行互不依赖的工具，依赖工具串行执行
 6. 结果以 OpenAI tool result 格式 append 到 messages
 7. 回到步骤 3，最多 7 轮
 8. 超过 7 轮：返回终止消息
 
-并行调用处理：同一轮 LLM 返回的多个 tool_calls 可以并行执行（尤其 `search_paper` 和 `get_section` 可能不依赖对方），结果按顺序一起传回。
+**并行 vs 串行：**
+
+- `search_paper` / `get_section`：无相互依赖，同一轮内可并行执行
+- `describe_image`：依赖前一步 ToolResult 中的 resource id，必须在前一步结果返回后才能调用
+
+同一轮 LLM 返回的 tool_calls 如果是同一类无依赖工具，直接并行执行，结果按顺序一起传回。
 
 ## LLMRouter 改动
 
@@ -131,7 +144,7 @@ def handle_question(question, ctx, router):
 Agent 执行过程中打印工具调用日志：
 
 ```
-  [agent] search_paper("核心贡献") → 3 chunks, 2 attachments
+  [agent] search_paper("核心贡献") → 3 chunks, 2 resources
   [agent] describe_image("img_3") → 完成
 ```
 
@@ -139,11 +152,12 @@ Agent 执行过程中打印工具调用日志：
 
 | 场景 | 处理 |
 |------|------|
-| 工具返回空结果 | 返回 `ToolResult("[检索结果为空]")`，Agent 自然告知 |
+| 工具返回空结果 | 返回 `ToolResult(text="[检索结果为空]", resources=[])`，Agent 自然告知 |
+| get_section 内容过长 | 截断到 3000 字，尾部标注原文总字数 |
 | LLM API 调用失败 | 重试 2 次（指数退避），仍失败向上抛 |
 | 超过 7 轮 | 返回 `"抱歉，暂时没能找到相关信息，请尝试换一个问法。"` |
 | describe_image 加载失败 | 返回 `"[图片无法读取]"` |
-| 幻觉工具名/参数格式错误 | 返回 `ToolResult("[工具调用失败: {error}]")` |
+| 幻觉工具名/参数格式错误 | 返回 `ToolResult(text="[工具调用失败: {error}]", resources=[])` |
 
 ## 测试
 
@@ -152,7 +166,7 @@ Agent 执行过程中打印工具调用日志：
 - `test_agent_answers_without_tools` — LLM 直接回答
 - `test_agent_calls_search_paper` — 调用 search_paper 路径
 - `test_agent_calls_get_section` — 调用 get_section 路径
-- `test_agent_describe_image` — attachment → describe_image 路径
+- `test_agent_describe_image` — resource → describe_image 路径
 - `test_agent_max_rounds` — 7 轮后强制终止
 - `test_tool_empty_result` — 空检索结果不崩溃
 - `test_memory_injection` — PaperMemory 注入 system prompt
