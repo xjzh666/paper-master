@@ -73,14 +73,39 @@ def _tool_to_openai_schema(tool: Tool) -> dict:
     }
 
 
+def _match_figure_alias(chunks: list, query: str) -> list:
+    """Match figure/table references in query against chunk aliases.
+
+    Supports: Figure 2, Fig. 3, Table 1, 图2, 图 2, 表1, etc.
+    """
+    import re
+    # Match Figure/Fig/Table/图/表 + optional dot + number
+    m = re.search(r'(Fig(?:ure)?|Table|图|表)\s*\.?\s*(\d+)', query, re.IGNORECASE)
+    if not m:
+        return []
+    label = f"{m.group(1)} {m.group(2)}"
+    label_dot = f"{m.group(1)}. {m.group(2)}"
+    matched = []
+    for chunk in chunks:
+        aliases_lower = [a.lower() for a in chunk.aliases]
+        if label.lower() in aliases_lower or label_dot.lower() in aliases_lower:
+            matched.append(chunk)
+    return matched
+
+
 def _make_tools(ctx, vision_client, resources_store: dict) -> list[Tool]:
     """Create the standard tool set for PaperAgent."""
 
     def search_paper(query: str) -> ToolResult:
-        chunks = ctx.search_chunks(query, top_k=3)
-        if not chunks:
-            return ToolResult(text="[检索结果为空]")
-        text, image_blocks = ctx.build_context(chunks, window=1)
+        # Exact alias match for figure/table references (Fig. 2, Table 1, 图3, etc.)
+        alias_chunks = _match_figure_alias(ctx.paper.chunks, query)
+        if alias_chunks:
+            text, image_blocks = ctx.build_context(alias_chunks, window=1)
+        else:
+            chunks = ctx.search_chunks(query, top_k=3)
+            if not chunks:
+                return ToolResult(text="[检索结果为空]")
+            text, image_blocks = ctx.build_context(chunks, window=1)
         resources = []
         for i, img in enumerate(image_blocks):
             if img.image_path:

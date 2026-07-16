@@ -1,4 +1,70 @@
-from paper_reader.agent import Resource, ToolResult, LLMToolResponse, Tool, _make_tools, PaperAgent
+from paper_reader.agent import Resource, ToolResult, LLMToolResponse, Tool, _make_tools, PaperAgent, _match_figure_alias
+
+
+def test_match_figure_alias_finds_fig_2():
+    from paper_reader.blocks import SemanticChunk
+    chunk = SemanticChunk(
+        chunk_id="c1", text="figure content",
+        blocks=[], section_path=[], images=[],
+        aliases=["Fig. 2", "Figure 2", "图2"],
+    )
+    result = _match_figure_alias([chunk], "讲解一下 Figure 2")
+    assert len(result) == 1
+
+
+def test_match_figure_alias_finds_table_1():
+    from paper_reader.blocks import SemanticChunk
+    chunk = SemanticChunk(
+        chunk_id="c1", text="table content",
+        blocks=[], section_path=[], images=[],
+        aliases=["Table 1", "表1"],
+    )
+    result = _match_figure_alias([chunk], "Table 1 的数据是什么")
+    assert len(result) == 1
+
+
+def test_match_figure_alias_no_match():
+    from paper_reader.blocks import SemanticChunk
+    chunk = SemanticChunk(
+        chunk_id="c1", text="text",
+        blocks=[], section_path=[], images=[],
+        aliases=["Fig. 1", "Figure 1"],
+    )
+    result = _match_figure_alias([chunk], "讲解一下 Figure 2")
+    assert len(result) == 0
+
+
+def test_match_figure_alias_not_a_figure_query():
+    from paper_reader.blocks import SemanticChunk
+    chunk = SemanticChunk(chunk_id="c1", text="text", blocks=[], section_path=[], images=[])
+    result = _match_figure_alias([chunk], "核心贡献是什么")
+    assert len(result) == 0
+
+
+def test_search_paper_exact_match_includes_figure_resource():
+    """When query contains 'Figure 2', alias match should find the image resource."""
+    from paper_reader.blocks import ContentBlock, SemanticChunk
+    ctx = FakeCtx()
+    img_block = ContentBlock(
+        type="image", text="Fig. 2. Architecture",
+        level=0, page_idx=6,
+        image_path="images/fig2.png",
+    )
+    chunk = SemanticChunk(
+        chunk_id="ch_fig2", text="The system architecture is shown in Fig. 2.",
+        blocks=[img_block], section_path=[], images=[img_block],
+        aliases=["Fig. 2", "Figure 2"],
+    )
+    ctx.paper.chunks.append(chunk)
+    ctx._chunk_texts.append(chunk.text)
+
+    store = {}
+    tools = _make_tools(ctx, FakeVisionClient(), store)
+    search_fn = next(t for t in tools if t.name == "search_paper").callable
+
+    result = search_fn(query="讲解一下 Figure 2")
+    assert len(result.resources) == 1
+    assert result.resources[0].id == "image_6_0"
 
 
 def test_resource_creation():
