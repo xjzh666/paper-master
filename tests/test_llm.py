@@ -319,3 +319,75 @@ def test_router_omits_weizhi_fields_in_memory():
     assert "真实问题" in result
     assert "动机" not in result
     assert "实验设计" not in result
+
+
+def test_openai_chat_with_tools_returns_tool_calls():
+    from unittest.mock import Mock
+    from paper_reader.llm import OpenAIClient
+    from paper_reader.agent import LLMToolResponse
+
+    client = OpenAIClient(api_key="test-key", model="gpt-4o")
+
+    tc = Mock()
+    tc.id = "call_001"
+    tc.function.name = "search_paper"
+    tc.function.arguments = '{"query":"test query"}'
+
+    msg = Mock()
+    msg.tool_calls = [tc]
+    msg.content = None
+
+    choice = Mock()
+    choice.message = msg
+    response = Mock()
+    response.choices = [choice]
+
+    client._client = Mock()
+    client._client.chat.completions.create = Mock(return_value=response)
+
+    tools = [{
+        "type": "function",
+        "function": {
+            "name": "search_paper",
+            "description": "搜索论文内容",
+            "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+        },
+    }]
+
+    result = client.chat_with_tools(
+        messages=[{"role": "user", "content": "hello"}],
+        tools=tools,
+        system_prompt="You are helpful.",
+    )
+
+    assert isinstance(result, LLMToolResponse)
+    assert result.text is None
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0]["name"] == "search_paper"
+
+
+def test_openai_chat_with_tools_returns_text_when_no_tool_calls():
+    from unittest.mock import Mock
+    from paper_reader.llm import OpenAIClient
+
+    client = OpenAIClient(api_key="test-key", model="gpt-4o")
+
+    msg = Mock()
+    msg.tool_calls = None
+    msg.content = "plain text answer"
+
+    choice = Mock()
+    choice.message = msg
+    response = Mock()
+    response.choices = [choice]
+
+    client._client = Mock()
+    client._client.chat.completions.create = Mock(return_value=response)
+
+    result = client.chat_with_tools(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[],
+    )
+
+    assert result.text == "plain text answer"
+    assert result.tool_calls == []

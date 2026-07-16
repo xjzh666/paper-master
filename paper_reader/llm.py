@@ -121,6 +121,37 @@ class OpenAIClient(LLMClient):
         )
         return response.choices[0].message.content
 
+    def chat_with_tools(
+        self, messages: list[dict], tools: list[dict],
+        system_prompt: str = "",
+    ):
+        from paper_reader.agent import LLMToolResponse
+
+        api_messages = []
+        if system_prompt:
+            api_messages.append({"role": "system", "content": system_prompt})
+        api_messages.extend(messages)
+
+        response = self._client.chat.completions.create(
+            model=self.model,
+            messages=api_messages,
+            tools=tools if tools else None,
+            tool_choice="auto" if tools else None,
+            max_tokens=4096,
+        )
+
+        msg = response.choices[0].message
+        tool_calls = []
+        if msg.tool_calls:
+            for tc in msg.tool_calls:
+                tool_calls.append({
+                    "id": tc.id,
+                    "name": tc.function.name,
+                    "arguments": tc.function.arguments,
+                })
+
+        return LLMToolResponse(text=msg.content, tool_calls=tool_calls)
+
 
 SYSTEM_PROMPT = """你是一个论文阅读助手。你根据提供的论文内容帮助用户理解学术论文，用中文回答问题。
 
@@ -189,6 +220,12 @@ class LLMRouter:
         parts.append("")
         parts.append(f"问题: {question}")
         return "\n".join(parts)
+
+    def chat_with_tools(
+        self, messages: list[dict], tools: list[dict],
+        system_prompt: str = "",
+    ):
+        return self._text_client.chat_with_tools(messages, tools, system_prompt)
 
 
 def create_client(model_config: dict) -> LLMClient:
