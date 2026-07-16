@@ -183,6 +183,49 @@ class SemanticChunk:
 
 
 @dataclass
+class PaperMemory:
+    research_problem: str = ""
+    motivation: str = ""
+    method: str = ""
+    method_why: str = ""
+    experiments: str = ""
+    key_results: str = ""
+    contributions: str = ""
+    limitations: str = ""
+    takeaways: str = ""
+    keywords: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "research_problem": self.research_problem,
+            "motivation": self.motivation,
+            "method": self.method,
+            "method_why": self.method_why,
+            "experiments": self.experiments,
+            "key_results": self.key_results,
+            "contributions": self.contributions,
+            "limitations": self.limitations,
+            "takeaways": self.takeaways,
+            "keywords": self.keywords,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "PaperMemory":
+        return cls(
+            research_problem=d.get("research_problem", ""),
+            motivation=d.get("motivation", ""),
+            method=d.get("method", ""),
+            method_why=d.get("method_why", ""),
+            experiments=d.get("experiments", ""),
+            key_results=d.get("key_results", ""),
+            contributions=d.get("contributions", ""),
+            limitations=d.get("limitations", ""),
+            takeaways=d.get("takeaways", ""),
+            keywords=d.get("keywords", []),
+        )
+
+
+@dataclass
 class PaperDocument:
     filepath: str
     title: str = ""
@@ -191,10 +234,11 @@ class PaperDocument:
     chunks: list[SemanticChunk] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
     result_dir: str = ""
+    memory: PaperMemory | None = None
 
     def to_dict(self) -> dict:
         block_index_map = {id(b): i for i, b in enumerate(self.blocks)}
-        return {
+        d = {
             "filepath": self.filepath, "title": self.title,
             "abstract": self.abstract,
             "blocks": [b.to_dict() for b in self.blocks],
@@ -205,6 +249,9 @@ class PaperDocument:
             "metadata": self.metadata,
             "result_dir": self.result_dir,
         }
+        if self.memory is not None:
+            d["memory"] = self.memory.to_dict()
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "PaperDocument":
@@ -213,11 +260,15 @@ class PaperDocument:
             SemanticChunk.from_dict(cd, blocks)
             for cd in d.get("chunks", [])
         ]
+        memory = None
+        if "memory" in d:
+            memory = PaperMemory.from_dict(d["memory"])
         return cls(
             filepath=d["filepath"], title=d.get("title", ""),
             abstract=d.get("abstract", ""), blocks=blocks, chunks=chunks,
             metadata=d.get("metadata", {}),
             result_dir=d.get("result_dir", ""),
+            memory=memory,
         )
 
 
