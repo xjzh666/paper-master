@@ -15,7 +15,9 @@ CACHE_DIR = Path.home() / ".cache" / "paper-master"
 
 
 class MinerUParser:
-    def parse(self, pdf_path: str, output_dir: str = "/tmp/mineru-output") -> PaperDocument:
+    def parse(self, pdf_path: str, output_dir: str | None = None) -> PaperDocument:
+        if output_dir is None:
+            output_dir = str(Path.home() / ".cache" / "paper-master" / "mineru-output")
         pdf_path = str(Path(pdf_path).resolve())
         cache_key = self._cache_key(pdf_path)
         cached = self._load_cache(cache_key)
