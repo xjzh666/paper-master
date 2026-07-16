@@ -170,3 +170,94 @@ def _make_tools(ctx, vision_client, resources_store: dict) -> list[Tool]:
             callable=describe_image,
         ),
     ]
+
+
+SYSTEM_PROMPT = """你是一个论文阅读助手。你根据提供的论文内容帮助用户理解学术论文，用中文回答问题。
+
+准则:
+- 仅根据提供的论文内容作答
+- 回答准确、简洁
+- 用中文回复
+- 如果提供的内容不足以回答问题，请明确说明
+- 讨论图表时，描述其展示的内容
+- 引用章节标题来为回答提供上下文
+
+你可以使用工具来检索论文内容。根据用户问题自主判断是否需要调用工具。"""
+
+
+class PaperAgent:
+    def __init__(self, text_client, vision_client, ctx):
+        self._text_client = text_client
+        self._vision_client = vision_client
+        self._ctx = ctx
+        self._resources: dict[str, Resource] = {}
+        self._tools = _make_tools(ctx, vision_client, self._resources)
+
+    def run(self, question: str, history: list[dict] | None = None,
+            memory: PaperMemory | None = None) -> str:
+        system = SYSTEM_PROMPT
+        if memory is not None:
+            system = system + "\n\n" + _format_memory(memory)
+
+        messages = list(history) if history else []
+        messages.append({"role": "user", "content": question})
+
+        tool_schemas = [_tool_to_openai_schema(t) for t in self._tools]
+
+        for _ in range(7):
+            response = self._text_client.chat_with_tools(
+                messages, tool_schemas, system_prompt=system,
+            )
+
+            if response.text and not response.tool_calls:
+                return response.text
+
+            if not response.tool_calls:
+                return response.text or ""
+
+            # Append assistant message with tool_calls
+            openai_tool_calls = []
+            for tc in response.tool_calls:
+                openai_tool_calls.append({
+                    "id": tc["id"],
+                    "type": "function",
+                    "function": {
+                        "name": tc["name"],
+                        "arguments": tc["arguments"] if isinstance(tc["arguments"], str) else json.dumps(tc["arguments"]),
+                    },
+                })
+            messages.append({
+                "role": "assistant",
+                "content": None,
+                "tool_calls": openai_tool_calls,
+            })
+
+            # Execute each tool call
+            for tc in response.tool_calls:
+                name = tc["name"]
+                raw_args = tc["arguments"]
+
+                try:
+                    args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                except json.JSONDecodeError:
+                    args = {}
+
+                tool = next((t for t in self._tools if t.name == name), None)
+                if tool is None:
+                    result = ToolResult(text=f"[未知工具: {name}]")
+                else:
+                    try:
+                        result = tool.callable(**args)
+                    except Exception as e:
+                        result = ToolResult(text=f"[工具执行失败: {e}]")
+
+                print(f"  [agent] {name}({str(raw_args)[:60]}{'...' if len(str(raw_args)) > 60 else ''})"
+                      f" → {len(result.text)} chars, {len(result.resources)} resources")
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": result.text,
+                })
+
+        return "抱歉，暂时没能找到相关信息，请尝试换一个问法。"

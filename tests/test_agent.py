@@ -1,4 +1,4 @@
-from paper_reader.agent import Resource, ToolResult, LLMToolResponse, Tool, _make_tools
+from paper_reader.agent import Resource, ToolResult, LLMToolResponse, Tool, _make_tools, PaperAgent
 
 
 def test_resource_creation():
@@ -239,3 +239,219 @@ def test_tool_parameters_are_valid_json_schema():
         if "required" in params:
             for r in params["required"]:
                 assert r in params["properties"]
+
+
+# ── PaperAgent tests ───────────────────────────────────────────────────
+
+
+class FakeTextClient:
+    """Fake text LLM client scriptable for multi-turn agent tests."""
+    def __init__(self, responses=None):
+        self.calls = []
+        self._responses = responses or []
+        self._idx = 0
+
+    def chat_with_tools(self, messages, tools, system_prompt=""):
+        self.calls.append({"messages": list(messages), "tools": tools, "system_prompt": system_prompt})
+        if self._idx < len(self._responses):
+            resp = self._responses[self._idx]
+            self._idx += 1
+            return resp
+        return LLMToolResponse(text="fallback answer")
+
+
+def test_agent_answers_without_tools():
+    ctx = FakeCtx()
+    text_client = FakeTextClient(responses=[LLMToolResponse(text="直接回答")])
+    agent = PaperAgent(text_client=text_client, vision_client=FakeVisionClient(), ctx=ctx)
+
+    answer = agent.run(question="你好", history=[])
+    assert answer == "直接回答"
+    assert len(text_client.calls) == 1
+
+
+def test_agent_calls_search_paper_then_answers():
+    ctx = FakeCtx()
+    text_client = FakeTextClient(responses=[
+        LLMToolResponse(tool_calls=[{
+            "id": "call_1",
+            "name": "search_paper",
+            "arguments": '{"query":"core idea"}',
+        }]),
+        LLMToolResponse(text="根据检索结果，核心思想是..."),
+    ])
+    agent = PaperAgent(text_client=text_client, vision_client=FakeVisionClient(), ctx=ctx)
+
+    answer = agent.run(question="核心思想是什么？", history=[])
+    assert "核心思想" in answer
+    assert len(text_client.calls) == 2
+    second_messages = text_client.calls[1]["messages"]
+    tool_messages = [m for m in second_messages if m["role"] == "tool"]
+    assert len(tool_messages) == 1
+
+
+def test_agent_calls_get_section():
+    ctx = FakeCtx()
+    text_client = FakeTextClient(responses=[
+        LLMToolResponse(tool_calls=[{
+            "id": "call_1",
+            "name": "get_section",
+            "arguments": '{"reference":"Methods"}',
+        }]),
+        LLMToolResponse(text="Methods 章节包含..."),
+    ])
+    agent = PaperAgent(text_client=text_client, vision_client=FakeVisionClient(), ctx=ctx)
+
+    answer = agent.run(question="Methods 章节讲了什么？", history=[])
+    assert "Methods" in answer
+    assert len(text_client.calls) == 2
+
+
+def test_agent_describe_image_flow():
+    from paper_reader.blocks import ContentBlock, SemanticChunk
+    import tempfile, os
+
+    ctx = FakeCtx()
+    tmpdir = tempfile.mkdtemp()
+    img_path = os.path.join(tmpdir, "images", "arch.png")
+    os.makedirs(os.path.dirname(img_path), exist_ok=True)
+    with open(img_path, "wb") as f:
+        f.write(b"fake_png_data")
+    ctx.paper.result_dir = tmpdir
+
+    img_block = ContentBlock(
+        type="image", text="Figure 1: Architecture",
+        level=0, page_idx=0, image_path="images/arch.png",
+    )
+    chunk = SemanticChunk(
+        chunk_id="ch_img", text="See Figure 1 for architecture.",
+        blocks=[img_block], section_path=[], images=[img_block],
+    )
+    ctx.paper.chunks.append(chunk)
+    ctx._chunk_texts.append(chunk.text)
+
+    text_client = FakeTextClient(responses=[
+        LLMToolResponse(tool_calls=[{
+            "id": "call_1",
+            "name": "search_paper",
+            "arguments": '{"query":"architecture"}',
+        }]),
+        LLMToolResponse(tool_calls=[{
+            "id": "call_2",
+            "name": "describe_image",
+            "arguments": '{"resource_id":"img_0_0"}',
+        }]),
+        LLMToolResponse(text="架构图展示了..."),
+    ])
+
+    vision = FakeVisionClient()
+    agent = PaperAgent(text_client=text_client, vision_client=vision, ctx=ctx)
+
+    answer = agent.run(question="描述一下架构图", history=[])
+    assert "架构" in answer
+    assert len(text_client.calls) == 3
+
+    import shutil
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_agent_max_rounds_enforced():
+    ctx = FakeCtx()
+    responses = [
+        LLMToolResponse(tool_calls=[{
+            "id": f"call_{i}",
+            "name": "search_paper",
+            "arguments": '{"query":"test"}',
+        }])
+        for i in range(10)
+    ]
+    text_client = FakeTextClient(responses=responses)
+    agent = PaperAgent(text_client=text_client, vision_client=FakeVisionClient(), ctx=ctx)
+
+    answer = agent.run(question="test", history=[])
+    assert "暂时没能找到相关信息" in answer
+    assert len(text_client.calls) == 7
+
+
+def test_agent_injects_memory_into_system_prompt():
+    from paper_reader.blocks import PaperMemory
+
+    ctx = FakeCtx()
+    text_client = FakeTextClient(responses=[LLMToolResponse(text="got it")])
+
+    memory = PaperMemory(
+        research_problem="测试问题",
+        method="测试方法",
+    )
+    agent = PaperAgent(text_client=text_client, vision_client=FakeVisionClient(), ctx=ctx)
+    agent.run(question="test", history=[], memory=memory)
+
+    system_prompt = text_client.calls[0]["system_prompt"]
+    assert "当前论文记忆" in system_prompt
+    assert "测试问题" in system_prompt
+    assert "测试方法" in system_prompt
+
+
+def test_agent_handles_unknown_tool():
+    ctx = FakeCtx()
+    text_client = FakeTextClient(responses=[
+        LLMToolResponse(tool_calls=[{
+            "id": "call_1",
+            "name": "nonexistent_tool",
+            "arguments": '{}',
+        }]),
+        LLMToolResponse(text="retrying after error"),
+    ])
+    agent = PaperAgent(text_client=text_client, vision_client=FakeVisionClient(), ctx=ctx)
+
+    answer = agent.run(question="test", history=[])
+    assert "retrying" in answer
+
+
+def test_agent_handles_bad_arguments():
+    ctx = FakeCtx()
+    text_client = FakeTextClient(responses=[
+        LLMToolResponse(tool_calls=[{
+            "id": "call_1",
+            "name": "search_paper",
+            "arguments": "not json",
+        }]),
+        LLMToolResponse(text="recovered"),
+    ])
+    agent = PaperAgent(text_client=text_client, vision_client=FakeVisionClient(), ctx=ctx)
+
+    answer = agent.run(question="test", history=[])
+    assert "recovered" in answer
+
+
+def test_agent_prints_tool_calls(capsys):
+    ctx = FakeCtx()
+    text_client = FakeTextClient(responses=[
+        LLMToolResponse(tool_calls=[{
+            "id": "call_1",
+            "name": "search_paper",
+            "arguments": '{"query":"hello"}',
+        }]),
+        LLMToolResponse(text="answer"),
+    ])
+    agent = PaperAgent(text_client=text_client, vision_client=FakeVisionClient(), ctx=ctx)
+    agent.run(question="hello", history=[])
+
+    captured = capsys.readouterr().out
+    assert "[agent]" in captured
+    assert "search_paper" in captured
+
+
+def test_agent_tool_result_empty():
+    ctx = FakeCtx()
+    text_client = FakeTextClient(responses=[
+        LLMToolResponse(tool_calls=[{
+            "id": "call_1",
+            "name": "search_paper",
+            "arguments": '{"query":"zzz_nonexistent_zzz"}',
+        }]),
+        LLMToolResponse(text="没有找到相关内容"),
+    ])
+    agent = PaperAgent(text_client=text_client, vision_client=FakeVisionClient(), ctx=ctx)
+    answer = agent.run(question="zzz nonexistent zzz", history=[])
+    assert "没有找到" in answer
