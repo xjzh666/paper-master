@@ -1,6 +1,5 @@
 # tests/test_memory.py
 import json
-import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
 
