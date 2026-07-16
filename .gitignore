@@ -6,4 +6,5 @@ venv/
 dist/
 *.egg-info/
 CLAUDE.md
-papers.venv
+papers
+.venv
