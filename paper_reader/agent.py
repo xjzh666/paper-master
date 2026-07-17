@@ -115,7 +115,7 @@ def _match_figure_alias(chunks: list, query: str) -> list:
     return matched
 
 
-def _make_tools(ctx, vision_client, resources_store: dict) -> list[Tool]:
+def _make_tools(ctx, vision_client, resources_store: dict, observations_store: list) -> list[Tool]:
     """Create the standard tool set for PaperAgent."""
 
     def search_paper(query: str) -> ToolResult:
@@ -179,6 +179,21 @@ def _make_tools(ctx, vision_client, resources_store: dict) -> list[Tool]:
         )
         return ToolResult(text=description)
 
+    def record_observation(summary: str, facts: list[str] | None = None,
+                           entities: list[str] | None = None,
+                           sources: list[str] | None = None) -> ToolResult:
+        obs = Observation(
+            summary=summary,
+            facts=facts or [],
+            entities=entities or [],
+            sources=sources or [],
+        )
+        observations_store.append(obs)
+        parts = [f"[已记录观察 #{len(observations_store)}] {summary}"]
+        if facts:
+            parts.append("关键事实: " + "; ".join(facts))
+        return ToolResult(text="\n".join(parts))
+
     return [
         Tool(
             name="search_paper",
@@ -228,6 +243,39 @@ def _make_tools(ctx, vision_client, resources_store: dict) -> list[Tool]:
             },
             callable=describe_image,
         ),
+        Tool(
+            name="record_observation",
+            description=(
+                "记录本轮检索的关键发现（结构化观察）。"
+                "在看完 search_paper 或 get_section 的返回结果后调用，"
+                "总结本轮学到的关键信息。summary 为一段话总结，"
+                "facts 为关键事实列表，entities 为涉及的关键概念/方法/指标，"
+                "sources 为信息来源（如 ['p3 §2.1']）。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "summary": {"type": "string", "description": "本轮检索发现的关键信息总结"},
+                    "facts": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "关键事实列表",
+                    },
+                    "entities": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "涉及的关键概念、方法、指标等实体",
+                    },
+                    "sources": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "信息来源标注，如 ['p3 §2.1', 'p5 §4.2']",
+                    },
+                },
+                "required": ["summary"],
+            },
+            callable=record_observation,
+        ),
     ]
 
 
@@ -253,7 +301,9 @@ class PaperAgent:
         self._vision_client = vision_client
         self._ctx = ctx
         self._resources: dict[str, Resource] = {}
-        self._tools = _make_tools(ctx, vision_client, self._resources)
+        self._observations: list[Observation] = []
+        self._tool_round_map: dict[str, int] = {}
+        self._tools = _make_tools(ctx, vision_client, self._resources, self._observations)
 
     def run(self, question: str, history: list[dict] | None = None,
             memory: PaperMemory | None = None) -> str:

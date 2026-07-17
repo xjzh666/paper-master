@@ -59,7 +59,7 @@ def test_search_paper_exact_match_includes_figure_resource():
     ctx._chunk_texts.append(chunk.text)
 
     store = {}
-    tools = _make_tools(ctx, FakeVisionClient(), store)
+    tools = _make_tools(ctx, FakeVisionClient(), store, [])
     search_fn = next(t for t in tools if t.name == "search_paper").callable
 
     result = search_fn(query="讲解一下 Figure 2")
@@ -177,7 +177,7 @@ class FakeVisionClient:
 def test_search_paper_tool_returns_results():
     ctx = FakeCtx()
     store = {}
-    tools = _make_tools(ctx, FakeVisionClient(), store)
+    tools = _make_tools(ctx, FakeVisionClient(), store, [])
     search_fn = next(t for t in tools if t.name == "search_paper").callable
 
     result = search_fn(query="hello")
@@ -188,7 +188,7 @@ def test_search_paper_tool_returns_results():
 def test_search_paper_empty_results():
     ctx = FakeCtx()
     store = {}
-    tools = _make_tools(ctx, FakeVisionClient(), store)
+    tools = _make_tools(ctx, FakeVisionClient(), store, [])
     search_fn = next(t for t in tools if t.name == "search_paper").callable
 
     result = search_fn(query="nonexistent")
@@ -198,7 +198,7 @@ def test_search_paper_empty_results():
 def test_get_section_tool_finds_section():
     ctx = FakeCtx()
     store = {}
-    tools = _make_tools(ctx, FakeVisionClient(), store)
+    tools = _make_tools(ctx, FakeVisionClient(), store, [])
     section_fn = next(t for t in tools if t.name == "get_section").callable
 
     result = section_fn(reference="Methods")
@@ -209,7 +209,7 @@ def test_get_section_tool_finds_section():
 def test_get_section_not_found():
     ctx = FakeCtx()
     store = {}
-    tools = _make_tools(ctx, FakeVisionClient(), store)
+    tools = _make_tools(ctx, FakeVisionClient(), store, [])
     section_fn = next(t for t in tools if t.name == "get_section").callable
 
     result = section_fn(reference="NonexistentSection")
@@ -225,7 +225,7 @@ def test_get_section_truncates_long_content():
     ctx.paper.blocks = [heading, body]
 
     store = {}
-    tools = _make_tools(ctx, FakeVisionClient(), store)
+    tools = _make_tools(ctx, FakeVisionClient(), store, [])
     section_fn = next(t for t in tools if t.name == "get_section").callable
 
     result = section_fn(reference="Long Section")
@@ -240,7 +240,7 @@ def test_describe_image_tool():
     }
     store["img_1"].load_data = lambda: b"fake_image_data"
 
-    tools = _make_tools(FakeCtx(), vision, store)
+    tools = _make_tools(FakeCtx(), vision, store, [])
     desc_fn = next(t for t in tools if t.name == "describe_image").callable
 
     result = desc_fn(resource_id="img_1")
@@ -250,7 +250,7 @@ def test_describe_image_tool():
 
 def test_describe_image_missing_resource():
     vision = FakeVisionClient()
-    tools = _make_tools(FakeCtx(), vision, {})
+    tools = _make_tools(FakeCtx(), vision, {}, [])
     desc_fn = next(t for t in tools if t.name == "describe_image").callable
 
     result = desc_fn(resource_id="nonexistent")
@@ -263,7 +263,7 @@ def test_describe_image_load_failure():
     store = {
         "img_1": Resource(type="image", id="img_1", path="/nonexistent.png", caption=""),
     }
-    tools = _make_tools(FakeCtx(), vision, store)
+    tools = _make_tools(FakeCtx(), vision, store, [])
     desc_fn = next(t for t in tools if t.name == "describe_image").callable
 
     result = desc_fn(resource_id="img_1")
@@ -286,7 +286,7 @@ def test_search_paper_includes_image_resources():
     ctx._chunk_texts.append(chunk.text)
 
     store = {}
-    tools = _make_tools(ctx, FakeVisionClient(), store)
+    tools = _make_tools(ctx, FakeVisionClient(), store, [])
     search_fn = next(t for t in tools if t.name == "search_paper").callable
 
     result = search_fn(query="architecture")
@@ -297,7 +297,7 @@ def test_search_paper_includes_image_resources():
 
 def test_tool_parameters_are_valid_json_schema():
     ctx = FakeCtx()
-    tools = _make_tools(ctx, FakeVisionClient(), {})
+    tools = _make_tools(ctx, FakeVisionClient(), {}, [])
 
     for tool in tools:
         params = tool.parameters
