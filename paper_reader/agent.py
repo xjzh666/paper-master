@@ -346,11 +346,24 @@ class PaperAgent:
         messages = list(history) if history else []
         messages.append({"role": "user", "content": question})
 
+        # 注入当前已累积的 observations
+        if self._observations:
+            obs_lines = ["[已知信息 — 之前检索已发现]"]
+            for i, obs in enumerate(self._observations):
+                obs_lines.append(f"{i + 1}. {obs.summary}")
+            system = system + "\n\n" + "\n".join(obs_lines)
+
         tool_schemas = [_tool_to_openai_schema(t) for t in self._tools]
 
-        for _ in range(7):
+        # 重置轮次追踪（每次 run 是独立对话）
+        self._tool_round_map.clear()
+
+        for round_num in range(7):
+            # 发送前压缩往轮 tool result
+            compacted_messages = self._compact_messages(messages, round_num)
+
             response = self._text_client.chat_with_tools(
-                messages, tool_schemas, system_prompt=system,
+                compacted_messages, tool_schemas, system_prompt=system,
             )
 
             if response.text and not response.tool_calls:
@@ -403,5 +416,7 @@ class PaperAgent:
                     "tool_call_id": tc["id"],
                     "content": result.text,
                 })
+                # 记录 tool 消息所属轮次
+                self._tool_round_map[tc["id"]] = round_num
 
         return "抱歉，暂时没能找到相关信息，请尝试换一个问法。"
