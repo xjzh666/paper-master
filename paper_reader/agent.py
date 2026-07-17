@@ -305,6 +305,38 @@ class PaperAgent:
         self._tool_round_map: dict[str, int] = {}
         self._tools = _make_tools(ctx, vision_client, self._resources, self._observations)
 
+    def _record_tool_round(self, tool_call_id: str, round_num: int) -> None:
+        self._tool_round_map[tool_call_id] = round_num
+
+    def _compact_messages(self, messages: list[dict], current_round: int) -> list[dict]:
+        """替换往轮 tool result 为 observation 摘要或截断。
+
+        最新一轮 (current_round) 的 tool result 保留完整，
+        往轮的替换为对应 observation 摘要，无 observation 则截断降级。
+        """
+        compacted: list[dict] = []
+        for msg in messages:
+            if msg["role"] == "tool":
+                tc_id = msg.get("tool_call_id", "")
+                round_num = self._tool_round_map.get(tc_id)
+                if round_num is not None and round_num < current_round:
+                    obs = self._observations[round_num] if round_num < len(self._observations) else None
+                    if obs is not None:
+                        compacted.append({
+                            "role": "tool",
+                            "tool_call_id": tc_id,
+                            "content": f"[已记录观察] {obs.summary}",
+                        })
+                    else:
+                        compacted.append({
+                            "role": "tool",
+                            "tool_call_id": tc_id,
+                            "content": _smart_truncate(msg["content"], max_chars=300),
+                        })
+                    continue
+            compacted.append(msg)
+        return compacted
+
     def run(self, question: str, history: list[dict] | None = None,
             memory: PaperMemory | None = None) -> str:
         system = SYSTEM_PROMPT
