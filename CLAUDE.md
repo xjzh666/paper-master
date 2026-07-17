@@ -111,37 +111,45 @@ PaperDocument
 
 不再把检索做得更精细，而是让 Agent 真正理解论文内容，能跨章节推理。
 
-### P0：RAG 工具化
+### P0：RAG 工具化 ✅ 已完成
 
-将检索能力从 pipeline 中解耦为独立接口，让 Agent 决定什么时候调用 RAG，而不是每个问题固定走检索。
-
-- [ ] `search_paper(query, scope="current")` — 单论文内检索
-- [ ] 交互循环中 Agent 自主判断是否需要检索（而非每问必查）
+- [x] `search_paper(query)` — 单论文语义检索 + 图/表 aliases 精确匹配，BGE-M3 混合检索，window=1
+- [x] `get_section(reference)` — 章节精确引用（含 HTML 标签剥离匹配），3000 字截断
+- [x] `describe_image(resource_id)` — VLM 图片内容解析，图片懒加载
+- [x] PaperAgent 完整 Agent 循环（LLM 原生 function calling，最多 7 轮）
+- [x] Resource/ToolResult 结构化工具返回（text + resources，资源引用不传 bytes）
+- [x] MinerU 输出持久化到 `~/.cache/paper-master/mineru-output/`
+- [x] System prompt 含停止准则（拿到足够信息就回答、图片不可用不再重试）
+- [x] Agent 打印工具调用日志（`[agent] tool_name(args) → N chars, M resources`）
 
 ### P1：Paper Memory（论文结构化理解）✅ 已完成
-
-读完论文后形成结构化认识，不依赖 chunk embedding 做跨章节推理。
 
 - [x] Paper Memory 数据结构（Research Problem, Motivation, Method, Experiment, Limitation, Contribution...）
 - [x] LLM 驱动的论文结构化抽取（一次解析，存入缓存 `{sha256}-memory.json`）
 - [x] 对话中注入 system prompt，RAG 检索 + Memory 全局理解互补
-- [ ] 后续：让检索能按语义 section 过滤（"找实验结果"而非"找相似文本"）
 
-### P2：Query Router
+### P2：Tool Result 压缩（下一步 — 优先）
 
-区分问题类型，不同问题走不同检索路径。第一阶段用规则，不引入 LLM 分类。
+Agent 循环当前增量追加所有 tool 结果到 messages，无截断或摘要。7 轮 × 每轮可能数千字，上下文膨胀快。
 
-- [ ] 规则路由：图/表/章节引用 → aliases 精确匹配（已具备 aliases 数据）
-- [ ] 规则路由：开放理解问题 → 语义检索
-- [ ] 规则路由：比较/综述类问题 → 后续多论文能力支撑
+- [ ] 简单方案：每条 tool result 截断到 1500 字
+- [ ] 进阶方案：保留最近 2-3 轮完整结果，更早的 result 用 LLM 做一句话摘要替代
+- [ ] 最终方案：按 token 预算动态管理（总量控制 + 重要性排序）
 
-### P3：后续扩展
+### P3：引用溯源（下一步）
+
+回答标注来源，让用户知道每段信息来自论文的哪一部分。
+
+- [ ] tool result 中的文本段标注 `[p3, §2.1]` 元信息
+- [ ] system prompt 引导 LLM 在回答中引用来源
+- [ ] 最终回答中标注来源 chunk / page_idx / 章节
+
+### P4：后续扩展
 
 - [ ] 多轮对话 query rewriting（代词和省略会降低检索精度）
-- [ ] 图片内容理解（图片做 VLM 描述纳入 Paper Memory）
-- [ ] 引用溯源（回答标注来源 chunk / page_idx / 章节）
+- [ ] 检索语义 section 过滤（"找实验结果"而非"找相似文本"）
 - [ ] 多论文对比（/load + /compare）
-- [ ] AnthropicClient 的 base_url 支持（目前只有 OpenAI 格式支持 base_url）
+- [ ] AnthropicClient 的 base_url 支持
 
 ## 用户当前配置
 
@@ -158,7 +166,7 @@ PaperDocument
 3. **RAG 定位**：RAG 应作为 Agent 可调用的工具，而非整个系统的核心流程。Agent 决定什么时候需要检索，不强制每轮走 RAG
 4. **路由规则**：检索窗口中包含图片/表格 → vision 模型；纯文字 → text 模型。路由日志 `[路由: vision/text]` 开箱可见。未来 Query Router 将区分定位/理解/比较三类问题
 5. **系统提示词**：两个模型共用一个中文 SYSTEM_PROMPT
-6. **缓存策略**：PDF 内容 sha256 → `~/.cache/paper-master/{hash}.json`（含 blocks + chunks + embeddings + lexical_weights + aliases）+ `{hash}-memory.json`（Paper Memory，独立文件用于生命周期解耦）。MinerU 原始输出留在 `/tmp/mineru-output/`（不自动清理）。batch 分三阶段（MinerU 解析 → BGE-M3 编码 → Memory 抽取）
+6. **缓存策略**：PDF 内容 sha256 → `~/.cache/paper-master/{hash}.json`（含 blocks + chunks + embeddings + lexical_weights + aliases）+ `{hash}-memory.json`（Paper Memory，独立文件用于生命周期解耦）。MinerU 原始输出留在 `~/.cache/paper-master/mineru-output/`（持久化，不自动清理）。batch 分三阶段（MinerU 解析 → BGE-M3 编码 → Memory 抽取）
 7. **图片加载**：ContentBlock.image_bytes 懒加载，仅 LLM 需要时才读文件
 8. **暂不引入 LangChain/LangGraph**：当前是简单流水线。后续 Agent 框架再评估，在此之前的工具化用纯函数接口
 9. **旧 parser.py 保留不动**，mineru_parser.py 是主要解析路径
