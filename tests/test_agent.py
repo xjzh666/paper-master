@@ -557,3 +557,68 @@ def test_smart_truncate_includes_original_length():
     result = _smart_truncate(text, max_chars=300)
     assert "1000" in result
     assert "已截断" in result
+
+
+# ── record_observation tool tests ──────────────────────────────────────
+
+
+def test_record_observation_stores_observation():
+    from paper_reader.agent import _make_tools
+    ctx = FakeCtx()
+    store = {}
+    obs_store = []
+    tools = _make_tools(ctx, FakeVisionClient(), store, obs_store)
+    record_fn = next(t for t in tools if t.name == "record_observation").callable
+
+    result = record_fn(
+        summary="注意力机制通过 Q/K/V 计算关联权重",
+        facts=["公式为 softmax(QK^T/√d_k)V", "Multi-head 允许多子空间"],
+        entities=["Attention", "Q/K/V"],
+        sources=["p3 §3.1"],
+    )
+    assert len(obs_store) == 1
+    assert obs_store[0].summary == "注意力机制通过 Q/K/V 计算关联权重"
+    assert len(obs_store[0].facts) == 2
+    assert len(obs_store[0].entities) == 2
+    assert obs_store[0].sources == ["p3 §3.1"]
+    assert "已记录观察" in result.text
+
+
+def test_record_observation_minimal_fields():
+    from paper_reader.agent import _make_tools
+    ctx = FakeCtx()
+    obs_store = []
+    tools = _make_tools(ctx, FakeVisionClient(), {}, obs_store)
+    record_fn = next(t for t in tools if t.name == "record_observation").callable
+
+    result = record_fn(summary="简要总结")
+    assert len(obs_store) == 1
+    assert obs_store[0].summary == "简要总结"
+    assert obs_store[0].facts == []
+    assert obs_store[0].entities == []
+    assert obs_store[0].sources == []
+
+
+def test_record_observation_multiple_calls_accumulate():
+    from paper_reader.agent import _make_tools
+    ctx = FakeCtx()
+    obs_store = []
+    tools = _make_tools(ctx, FakeVisionClient(), {}, obs_store)
+    record_fn = next(t for t in tools if t.name == "record_observation").callable
+
+    record_fn(summary="第一轮发现")
+    record_fn(summary="第二轮发现")
+    assert len(obs_store) == 2
+    assert obs_store[0].summary == "第一轮发现"
+    assert obs_store[1].summary == "第二轮发现"
+
+
+def test_record_observation_is_in_tool_list():
+    from paper_reader.agent import _make_tools
+    ctx = FakeCtx()
+    tools = _make_tools(ctx, FakeVisionClient(), {}, [])
+    names = [t.name for t in tools]
+    assert "record_observation" in names
+    assert "search_paper" in names
+    assert "get_section" in names
+    assert "describe_image" in names
