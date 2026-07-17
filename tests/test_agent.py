@@ -732,3 +732,86 @@ def test_compact_messages_handles_messages_without_tool_call_id():
 
     assert compacted[0]["content"] == "no tool_call_id"
     assert compacted[1]["content"] == "问题"
+
+
+# ── End-to-end compression tests ───────────────────────────────────────
+
+
+def test_agent_passes_compacted_messages_to_llm():
+    """验证 Agent 在多轮对话中发送的是压缩后的消息。"""
+    from paper_reader.agent import PaperAgent, Observation
+    ctx = FakeCtx()
+
+    text_client = FakeTextClient(responses=[
+        # 第 0 轮：搜索
+        LLMToolResponse(tool_calls=[{
+            "id": "call_1",
+            "name": "search_paper",
+            "arguments": '{"query":"method"}',
+        }]),
+        # 第 1 轮：记录观察 + 继续搜
+        LLMToolResponse(tool_calls=[
+            {
+                "id": "call_2",
+                "name": "record_observation",
+                "arguments": '{"summary":"方法用的是梯度下降优化"}',
+            },
+            {
+                "id": "call_3",
+                "name": "search_paper",
+                "arguments": '{"query":"experiment"}',
+            },
+        ]),
+        # 第 2 轮：回答
+        LLMToolResponse(text="根据检索，方法使用了梯度下降..."),
+    ])
+    agent = PaperAgent(text_client=text_client, vision_client=FakeVisionClient(), ctx=ctx)
+
+    answer = agent.run(question="这篇论文的方法是什么？", history=[])
+
+    assert "梯度下降" in answer
+    assert len(text_client.calls) == 3
+
+    # 第 3 轮发送时（call index=2），第 0 轮结果已被 observation 替换
+    third_call_messages = text_client.calls[2]["messages"]
+    tool_msgs = [m for m in third_call_messages if m["role"] == "tool"]
+    # 第 0 轮的 search_paper 结果应已被 observation 替换（不含 # 编号）
+    obs_replacements = [m for m in tool_msgs if m["content"].startswith("[已记录观察] ")]
+    assert len(obs_replacements) == 1
+
+
+def test_agent_injects_observations_into_system_prompt():
+    """验证累积的 observations 注入到 system prompt 中。"""
+    from paper_reader.agent import PaperAgent, Observation
+    ctx = FakeCtx()
+
+    text_client = FakeTextClient(responses=[
+        LLMToolResponse(text="已回答"),
+    ])
+    agent = PaperAgent(text_client=text_client, vision_client=FakeVisionClient(), ctx=ctx)
+    agent._observations = [
+        Observation(summary="方法使用强化学习", facts=["PPO算法"]),
+        Observation(summary="在ImageNet上验证", facts=["Top-1 85%"]),
+    ]
+
+    agent.run(question="总结方法", history=[])
+
+    system_prompt = text_client.calls[0]["system_prompt"]
+    assert "已知信息" in system_prompt
+    assert "强化学习" in system_prompt
+    assert "ImageNet" in system_prompt
+
+
+def test_agent_clears_tool_round_map_on_new_run():
+    """新 run() 调用应重置轮次追踪。"""
+    from paper_reader.agent import PaperAgent
+    ctx = FakeCtx()
+
+    text_client = FakeTextClient(responses=[
+        LLMToolResponse(text="第一次回答"),
+    ])
+    agent = PaperAgent(text_client=text_client, vision_client=FakeVisionClient(), ctx=ctx)
+    agent._tool_round_map["old_call"] = 5
+
+    agent.run(question="新问题", history=[])
+    assert len(agent._tool_round_map) == 0
