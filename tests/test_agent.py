@@ -663,7 +663,7 @@ def test_compact_messages_replaces_old_round_with_observation():
     agent = PaperAgent(text_client=FakeTextClient(), vision_client=FakeVisionClient(), ctx=ctx)
     agent._tool_round_map["call_1"] = 0
     agent._tool_round_map["call_2"] = 1
-    agent._observations = [Observation(summary="注意力机制的核心是 QKV")]
+    agent._observations = [Observation(summary="注意力机制的核心是 QKV", round_num=1)]
 
     messages = [
         {"role": "tool", "tool_call_id": "call_1", "content": "很长的旧结果"},

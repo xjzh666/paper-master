@@ -31,6 +31,7 @@ class ToolResult:
 class Observation:
     """LLM 在每轮检索后记录的结构化观察。"""
     summary: str
+    round_num: int = -1     # 记录该观察的 agent 轮次
     facts: list[str] = field(default_factory=list)
     entities: list[str] = field(default_factory=list)
     sources: list[str] = field(default_factory=list)
@@ -321,7 +322,9 @@ class PaperAgent:
                 tc_id = msg.get("tool_call_id", "")
                 round_num = self._tool_round_map.get(tc_id)
                 if round_num is not None and round_num < current_round:
-                    obs = self._observations[round_num] if round_num < len(self._observations) else None
+                    # 观察记录在 round R+1 总结 round R 的结果
+                    matching = [o for o in self._observations if o.round_num == round_num + 1]
+                    obs = matching[0] if matching else None
                     if obs is not None:
                         compacted.append({
                             "role": "tool",
@@ -356,8 +359,9 @@ class PaperAgent:
 
         tool_schemas = [_tool_to_openai_schema(t) for t in self._tools]
 
-        # 重置轮次追踪（每次 run 是独立对话）
+        # 重置轮次追踪和观察（每次 run 是独立对话）
         self._tool_round_map.clear()
+        self._observations.clear()
 
         for round_num in range(7):
             # 发送前压缩往轮 tool result
@@ -419,5 +423,8 @@ class PaperAgent:
                 })
                 # 记录 tool 消息所属轮次
                 self._tool_round_map[tc["id"]] = round_num
+                # 标记 record_observation 发生在哪一轮
+                if name == "record_observation" and self._observations:
+                    self._observations[-1].round_num = round_num
 
         return "抱歉，暂时没能找到相关信息，请尝试换一个问法。"
