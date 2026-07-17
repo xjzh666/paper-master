@@ -523,3 +523,37 @@ def test_agent_tool_result_empty():
     agent = PaperAgent(text_client=text_client, vision_client=FakeVisionClient(), ctx=ctx)
     answer = agent.run(question="zzz nonexistent zzz", history=[])
     assert "没有找到" in answer
+
+
+# ── _smart_truncate tests ───────────────────────────────────────────────
+
+
+def test_smart_truncate_short_text_unchanged():
+    from paper_reader.agent import _smart_truncate
+    text = "短文本。"
+    result = _smart_truncate(text, max_chars=300)
+    assert result == text
+
+
+def test_smart_truncate_at_period_boundary():
+    from paper_reader.agent import _smart_truncate
+    text = "第一句话。第二句话。第三句话。"
+    result = _smart_truncate(text, max_chars=10)
+    assert "已截断" in result
+    assert result.startswith("第一句话。")
+
+
+def test_smart_truncate_at_newline_boundary():
+    from paper_reader.agent import _smart_truncate
+    text = "段落一\n段落二\n段落三"
+    result = _smart_truncate(text, max_chars=10)
+    assert result.startswith("段落一\n")
+    assert "已截断" in result
+
+
+def test_smart_truncate_includes_original_length():
+    from paper_reader.agent import _smart_truncate
+    text = "A" * 1000
+    result = _smart_truncate(text, max_chars=300)
+    assert "1000" in result
+    assert "已截断" in result
