@@ -28,6 +28,28 @@ class ToolResult:
 
 
 @dataclass
+class Observation:
+    """LLM 在每轮检索后记录的结构化观察。"""
+    summary: str
+    facts: list[str] = field(default_factory=list)
+    entities: list[str] = field(default_factory=list)
+    sources: list[str] = field(default_factory=list)
+
+
+def _smart_truncate(text: str, max_chars: int = 300) -> str:
+    """在句子边界截断文本，避免断句。"""
+    if len(text) <= max_chars:
+        return text
+    truncated = text[:max_chars]
+    for sep in ['. ', '。', '\n', '；', '; ']:
+        idx = truncated.rfind(sep)
+        if idx > max_chars * 0.5:
+            truncated = truncated[:idx + len(sep)]
+            break
+    return truncated.rstrip() + f"\n[已截断，原文共 {len(text)} 字]"
+
+
+@dataclass
 class LLMToolResponse:
     text: str | None = None
     tool_calls: list[dict] = field(default_factory=list)
