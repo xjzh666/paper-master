@@ -23,47 +23,49 @@ GitHub: https://github.com/xjzh666/paper-master
 main.py                  # CLI 入口，交互循环 + 批量解析
 paper_reader/
   ├── blocks.py          # 数据模型（ContentBlock / SemanticChunk / PaperMemory / PaperDocument）
+  ├── agent.py           # Agent 循环 + 工具定义 + 压缩 + Observation Memory
   ├── mineru_parser.py   # MinerU 解析器 + sha256 缓存
   ├── memory.py          # Paper Memory 抽取 + 缓存读写
   ├── parser.py          # PyMuPDF 解析器（旧，保留不用）
   ├── llm.py             # LLM 客户端 + 路由 + 配置加载
   └── context.py         # 对话上下文 + BGE-M3 向量检索 + 窗口构建
-tests/                   # 91 个测试，全过
+tests/                   # 146 个测试，全过
 config.example.yaml      # 配置模板（提交）
 config.yaml              # 实际配置（gitignore）
 .venv/                   # 虚拟环境（gitignore）
 papers/                  # 测试用 PDF 论文（gitignore）
 ```
 
-### 当前数据流（Pipeline 模式，后续将演进为 Agent + 工具模式）
+### 当前数据流（Agent + 工具模式，已实现）
 
+**论文预处理（一次性）：**
 ```
 PDF → MinerU CLI (VLM 版面分析) → content_list_v2.json + images/ + .md
   → MinerUParser → ContentBlock[] → merge_blocks() → SemanticChunk[]
   → PaperDocument → sha256 缓存到 ~/.cache/paper-master/
-  → ConversationContext → BGE-M3 编码 → 1024-d dense vectors + sparse lexical weights
+  → BGE-M3 编码 → 1024-d dense vectors + sparse lexical weights（内嵌 chunk）
   → Paper Memory 抽取 → 读 .md → LLM 结构化 JSON → {sha256}-memory.json
-  → 用户提问 → BGE-M3 混合检索（dense + sparse）→ top-3 → 窗口扩展
-  → LLMRouter.answer(text, images, question, history, title, memory) → 中文回答
-  → 有图片走 vision 模型，纯文字走 text 模型（带 `[路由: xxx]` 日志）
 ```
 
-### 目标架构（Agent + 工具模式）
-
+**对话时（Agent 循环）：**
 ```
-用户问题
-  │
-  ├── Query Router（规则：图/表/章节引用 → 精确匹配，开放问题 → 语义检索）
-  │
-  └── Agent 决策调用哪些工具
-        ├── RAG 检索工具（search_paper / search_literature）
-        ├── Paper Memory（论文结构化理解：Problem/Method/Contribution/...）
-        ├── 精确引用匹配（aliases / section_path）
-        └── （未来）文献搜索、代码实验、总结写作...
+用户提问
+  → PaperAgent.run()
+  → 每轮发送前 _compact_messages() 压缩往轮 tool result
+  → LLM 决策调用工具（最多 7 轮）:
+      ├── search_paper(query)     — BGE-M3 混合检索 + aliases 精确匹配
+      ├── get_section(reference)  — 章节精确引用，3000 字截断
+      ├── describe_image(rid)     — VLM 图片内容解析
+      └── record_observation(...) — 结构化记录本轮发现（summary + facts + entities + sources）
+  → 往轮 tool result 替换为 observation 摘要（无 observation 则智能截断降级）
+  → 中文回答
 ```
 
-### 数据模型（四层）
+遗留的简单路径 `LLMRouter.answer()` 仍然可用，但主要路径是 PaperAgent。
 
+### 数据模型
+
+**论文层（blocks.py）：**
 ```
 ContentBlock          — 版面元素，1:1 映射 MinerU 输出
   type: text | image | table | formula
@@ -75,11 +77,22 @@ SemanticChunk         — 语义单元，合并 ~512 tokens，64 tokens 重叠
 
 PaperMemory           — 结构化论文理解，LLM 一次性抽取
   research_problem, motivation, method, method_why, experiments,
-  key_results, contributions, limitations, takeaways, keywords
+  key_results, contributions, limitations, takeaways, keywords (10 字段)
 
 PaperDocument
   blocks: list[ContentBlock]   chunks: list[SemanticChunk]
   memory: PaperMemory | None
+```
+
+**Agent 层（agent.py）：**
+```
+Observation           — 每轮检索后的结构化观察（L2 记忆）
+  summary, round_num, facts, entities, sources
+
+Resource              — 工具返回的图片/表格引用，懒加载
+ToolResult            — 工具返回 {text, resources}
+Tool                  — 工具定义 {name, description, parameters (JSON Schema), callable}
+LLMToolResponse       — LLM 返回解析 {text, tool_calls}
 ```
 
 ## 已完成
@@ -98,7 +111,7 @@ PaperDocument
 - [x] **MinerU v1/v2 格式兼容**（content_list.json 平铺格式 + content_list_v2.json 分页嵌套格式）
 - [x] 配置文件：每个模型独立配 api_key、base_url、provider
 - [x] **Paper Memory 结构化理解** — LLM 抽取论文的研究问题、方法、贡献等 10 个字段，独立缓存 `{sha256}-memory.json`，注入对话 system prompt
-- [x] 91 个测试全覆盖（单元 + 集成，含 embedding mock）
+- [x] 146 个测试全覆盖（单元 + 集成，含 embedding mock）
 - [x] 中文 README + docs/architecture.md
 
 ## 进行中
@@ -116,6 +129,7 @@ PaperDocument
 - [x] `search_paper(query)` — 单论文语义检索 + 图/表 aliases 精确匹配，BGE-M3 混合检索，window=1
 - [x] `get_section(reference)` — 章节精确引用（含 HTML 标签剥离匹配），3000 字截断
 - [x] `describe_image(resource_id)` — VLM 图片内容解析，图片懒加载
+- [x] `record_observation(summary, facts, entities, sources)` — 结构化记录本轮检索发现，为压缩和长期记忆提供摘要
 - [x] PaperAgent 完整 Agent 循环（LLM 原生 function calling，最多 7 轮）
 - [x] Resource/ToolResult 结构化工具返回（text + resources，资源引用不传 bytes）
 - [x] MinerU 输出持久化到 `~/.cache/paper-master/mineru-output/`
@@ -128,20 +142,22 @@ PaperDocument
 - [x] LLM 驱动的论文结构化抽取（一次解析，存入缓存 `{sha256}-memory.json`）
 - [x] 对话中注入 system prompt，RAG 检索 + Memory 全局理解互补
 
-### P2：Tool Result 压缩（下一步 — 优先）
+### P2：Tool Result 压缩 ✅ 已完成
 
-Agent 循环当前增量追加所有 tool 结果到 messages，无截断或摘要。7 轮 × 每轮可能数千字，上下文膨胀快。
-
-- [ ] 简单方案：每条 tool result 截断到 1500 字
-- [ ] 进阶方案：保留最近 2-3 轮完整结果，更早的 result 用 LLM 做一句话摘要替代
-- [ ] 最终方案：按 token 预算动态管理（总量控制 + 重要性排序）
+- [x] `_smart_truncate(text, max_chars=300)` — 句子边界智能截断，避免断句
+- [x] `_compact_messages(messages, current_round)` — 每轮发送前压缩：最新轮保留完整，往轮替换为 observation 摘要
+- [x] `record_observation` 工具 — LLM 同一轮内顺手记录，不增加额外 API 调用
+- [x] 降级策略：LLM 不调 record_observation 时自动回退截断
+- [x] Observation 注入 system prompt — 累积的观察作为"已知信息"注入
+- [x] 每次 `run()` 调用重置 `_tool_round_map` 和 `_observations`，跨对话不污染
+- [x] `round_num` 字段解决 observation-to-round 的索引映射问题
 
 ### P3：引用溯源（下一步）
 
 回答标注来源，让用户知道每段信息来自论文的哪一部分。
 
-- [ ] tool result 中的文本段标注 `[p3, §2.1]` 元信息
-- [ ] system prompt 引导 LLM 在回答中引用来源
+`Observation.sources` 字段已支持 `['p3 §2.1']` 格式的引用标注（基础设施就绪），待做：
+- [ ] system prompt 引导 LLM 在 record_observation 和最终回答中引用来源
 - [ ] 最终回答中标注来源 chunk / page_idx / 章节
 
 ### P4：后续扩展
@@ -171,6 +187,8 @@ Agent 循环当前增量追加所有 tool 结果到 messages，无截断或摘�
 8. **暂不引入 LangChain/LangGraph**：当前是简单流水线。后续 Agent 框架再评估，在此之前的工具化用纯函数接口
 9. **旧 parser.py 保留不动**，mineru_parser.py 是主要解析路径
 10. **Paper Memory**：论文理解不止依赖 chunk embedding，LLM 一次性抽取 10 个结构化字段（研究问题、动机、方法、实验、局限、关键词等），存入独立缓存。当前单论文直接注入 system prompt，后续多论文时改造为 Agent 工具按需调用。关键词留作多论文路由筛选
+11. **Tool Result 压缩**：不增加额外 API 调用，利用 LLM 同一轮的多工具调用能力（record_observation + search_paper 在同一个 tool_calls 里发出）。往轮 tool result 替换为 observation 摘要，LLM 不调 record_observation 时降级为智能截断。最新一轮结果始终保留完整
+12. **三层记忆架构**：L1 Conversation Memory（messages，最新轮完整，往轮压缩）、L2 Observation Memory（结构化观察，`self._observations`，注入 system prompt）、L3 Evidence Memory（来源追溯，Observation.sources 字段已就绪，P3 完善）
 
 ## 常用命令
 
@@ -180,7 +198,7 @@ source .venv/bin/activate
 
 python3 main.py paper.pdf                     # 单篇阅读
 python3 main.py --batch papers/               # 批量预热
-python3 -m pytest tests/ -v                   # 测试 (91)
+python3 -m pytest tests/ -v                   # 测试 (146)
 GIT_SSL_NO_VERIFY=true git push               # 推送
 ```
 
