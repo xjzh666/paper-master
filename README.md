@@ -53,6 +53,13 @@ models:
 
 支持的 provider：`anthropic`、`openai`。text 和 vision 可以用同一个 provider。
 
+可选：配置 Zotero 数据目录（不配置则自动探测 `~/Zotero` 或 WSL2 下的 `/mnt/c/Users/*/Zotero`）：
+
+```yaml
+zotero:
+  data_dir: ""   # Zotero 数据目录（zotero.sqlite 所在目录），留空自动探测
+```
+
 ## 使用
 
 ### 单篇阅读
@@ -77,6 +84,31 @@ python3 main.py --batch papers/
 ```
 
 遍历目录下所有 PDF，预先解析并缓存。之后单篇打开秒加载。
+
+### 从 Zotero 库阅读
+
+对接本机 Zotero 库，不用手动拷贝 PDF：
+
+```bash
+python3 main.py --zotero
+```
+
+直接输关键字搜索（标题/作者），或 `/collections` 浏览收藏夹树，输入序号打开论文进入对话（首次走 MinerU 解析，之后缓存秒开）。
+
+### Zotero 检索接口（FastAPI）
+
+```bash
+uvicorn paper_reader.server:app
+```
+
+只读接口，供前端或模型 agent 复用：
+
+| 接口 | 说明 |
+|------|------|
+| `GET /api/zotero/collections` | 收藏夹树 |
+| `GET /api/zotero/items?collection_id=` | 条目列表 |
+| `GET /api/zotero/search?q=` | 标题/作者搜索 |
+| `GET /api/zotero/items/{id}` | 单条目详情 |
 
 ### 命令
 
