@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from pathlib import Path
 
+import yaml
 from fastapi import Depends, FastAPI, HTTPException
 
 from paper_reader.llm import load_config
@@ -12,9 +13,15 @@ from paper_reader.zotero import ZoteroLibrary, resolve_zotero_data_dir
 def _config_data_dir() -> Path:
     try:
         config = load_config("config.yaml")
-    except FileNotFoundError:
+    except (FileNotFoundError, yaml.YAMLError):
         config = None
-    return resolve_zotero_data_dir(config)
+    try:
+        return resolve_zotero_data_dir(config)
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=503,
+            detail="未找到 Zotero 数据库，请在 config.yaml 配置 zotero.data_dir",
+        )
 
 
 def create_app(data_dir: Path | None = None) -> FastAPI:

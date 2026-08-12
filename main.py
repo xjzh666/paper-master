@@ -232,6 +232,8 @@ def _zotero_loop(lib: ZoteroLibrary) -> None:
             _zotero_help()
         elif user_input == "/collections":
             current_items = _pick_collection_items(lib, session)
+        elif user_input == "/search":
+            print("用法: /search <关键字>")
         elif user_input.startswith("/search "):
             current_items = _search_and_show(lib, user_input[len("/search "):].strip())
         elif user_input.isdigit():
@@ -304,7 +306,10 @@ def _open_item(lib: ZoteroLibrary, item: ZoteroItem) -> None:
         print("该条目没有可用 PDF，跳过")
         return
     print(f"正在加载论文: {pdf}")
-    interactive_loop(str(pdf))
+    try:
+        interactive_loop(str(pdf))
+    except SystemExit:
+        print("\n返回 Zotero 列表...")
 
 
 def _zotero_help() -> None:

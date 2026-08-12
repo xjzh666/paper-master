@@ -85,7 +85,9 @@ class ZoteroLibrary:
         """
         params: list = list(_NON_READABLE)
         if collection_id is not None:
-            base += " AND i.itemID IN (SELECT itemID FROM collectionItems WHERE collectionID = ?)"
+            base += (" AND i.itemID IN (SELECT itemID FROM collectionItems "
+                     "WHERE collectionID = ? AND collectionID NOT IN "
+                     "(SELECT collectionID FROM deletedCollections))")
             params.append(collection_id)
         rows = self._conn.execute(base + " ORDER BY i.itemID", params).fetchall()
         if not rows:
@@ -136,9 +138,9 @@ class ZoteroLibrary:
             WHERE ic.itemID IN ({ph}) AND ct.creatorType = 'author'
             ORDER BY ic.itemID, ic.orderIndex
         """, ids):
-            creators.setdefault(r["itemID"], []).append(
-                _format_creator(r["firstName"], r["lastName"], r["fieldMode"])
-            )
+            name = _format_creator(r["firstName"], r["lastName"], r["fieldMode"])
+            if name:
+                creators.setdefault(r["itemID"], []).append(name)
         colls: dict[int, list[str]] = {}
         for r in self._conn.execute(f"""
             SELECT ci.itemID, c.collectionName
@@ -200,7 +202,7 @@ def _autodetect_candidates() -> list[Path]:
 def resolve_zotero_data_dir(config: dict | None = None) -> Path:
     configured = (config or {}).get("zotero", {}).get("data_dir")
     if configured:
-        p = Path(configured)
+        p = Path(str(configured))
         if (p / "zotero.sqlite").exists():
             return p
     for p in _autodetect_candidates():
