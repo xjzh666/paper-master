@@ -93,6 +93,29 @@ class ZoteroLibrary:
         ids = [r["itemID"] for r in rows]
         return self._assemble(rows, ids)
 
+    def search(self, keyword: str, limit: int = 20) -> list[ZoteroItem]:
+        kw = keyword.lower()
+        result = [
+            it for it in self.items()
+            if kw in it.title.lower()
+            or any(kw in c.lower() for c in it.creators)
+        ]
+        result.sort(key=lambda it: it.title.lower())
+        return result[:limit]
+
+    def get_item(self, item_id: int) -> ZoteroItem | None:
+        ph = ",".join("?" * len(_NON_READABLE))
+        rows = self._conn.execute(f"""
+            SELECT i.itemID, i.key, t.typeName
+            FROM items i JOIN itemTypes t ON i.itemTypeID = t.itemTypeID
+            WHERE i.itemID = ?
+              AND t.typeName NOT IN ({ph})
+              AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
+        """, [item_id, *_NON_READABLE]).fetchall()
+        if not rows:
+            return None
+        return self._assemble(rows, [rows[0]["itemID"]])[0]
+
     def _assemble(self, rows, ids):
         ph = ",".join("?" * len(ids))
         meta: dict[int, dict[str, str]] = {}

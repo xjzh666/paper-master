@@ -118,3 +118,50 @@ def test_item_without_pdf(zotero_db):
     assert it.has_pdf is False
     assert it.pdf_path is None
     assert lib.resolve_pdf(it) is None
+
+
+def test_search_title_case_insensitive(zotero_db):
+    lib = ZoteroLibrary(zotero_db)
+    try:
+        hits = [it.title for it in lib.search("HONEYPOT")]
+    finally:
+        lib.close()
+    assert hits == ["Honeypot Evolution"]
+
+
+def test_search_creator(zotero_db):
+    lib = ZoteroLibrary(zotero_db)
+    try:
+        hits = [it.title for it in lib.search("bob")]
+    finally:
+        lib.close()
+    assert hits == ["Honeypot Evolution"]
+
+
+def test_search_sorted_and_limited(zotero_db):
+    lib = ZoteroLibrary(zotero_db)
+    try:
+        hits = [it.title for it in lib.search("i", limit=1)]
+    finally:
+        lib.close()
+    assert hits == ["Agentic AI Threats"]  # first of [Agentic..., Retrieval...] sorted
+
+
+def test_search_no_match(zotero_db):
+    lib = ZoteroLibrary(zotero_db)
+    try:
+        hits = lib.search("zzz")
+    finally:
+        lib.close()
+    assert hits == []
+
+
+def test_get_item(zotero_db):
+    lib = ZoteroLibrary(zotero_db)
+    try:
+        it = lib.get_item(1)
+        missing = lib.get_item(999)
+    finally:
+        lib.close()
+    assert it is not None and it.title == "Honeypot Evolution"
+    assert missing is None
