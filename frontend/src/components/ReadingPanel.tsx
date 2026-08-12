@@ -1,4 +1,4 @@
-import { Spin, Alert, Typography, Anchor, Empty } from 'antd'
+import { Spin, Alert, Typography, Anchor, Empty, Collapse } from 'antd'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeSlug from 'rehype-slug'
@@ -41,11 +41,17 @@ export default function ReadingPanel({ status, error, overview, markdown }: Prop
         </Typography.Paragraph>
       )}
       {tocItems.length > 0 && (
-        <div style={{ position: 'sticky', top: 0, background: '#fff', paddingBottom: 8, marginBottom: 8 }}>
-          <Anchor items={tocItems} />
-        </div>
+        <Collapse
+          size="small"
+          style={{ marginBottom: 8 }}
+          items={[{
+            key: 'toc',
+            label: `目录 (${tocItems.length})`,
+            children: <Anchor items={tocItems} />,
+          }]}
+        />
       )}
-      <div>
+      <div className="markdown-body">
         <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSlug]}>
           {markdown}
         </ReactMarkdown>
