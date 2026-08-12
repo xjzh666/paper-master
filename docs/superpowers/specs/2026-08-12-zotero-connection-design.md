@@ -133,7 +133,7 @@ $ python3 main.py --zotero
 - `data_dir` 读取 config.yaml 的 `zotero.data_dir`，未配置时自动探测
 - 响应序列化 `ZoteroItem` / `ZoteroCollection`（`dataclasses.asdict`）
 - 启动：`uvicorn paper_reader.server:app`（桌面阶段再由 Tauri 自动拉起）
-- **本阶段不含"打开论文"端点**：打开 = 进入对话会话，属桌面阶段（会话管理）。API 只暴露元数据 / 检索 / PDF 路径
+- **本阶段 API 不返回论文内容**：前端读论文用 MinerU 的 markdown 渲染（设计决策 #4，不集成 pdf.js）。"按条目返回解析内容（markdown + 章节 + 图片）"端点属桌面阶段——管线已能产出 `.md`，届时加一个端点即可。本阶段 API 只暴露检索 / 元数据 / PDF 路径
 
 ## 配置
 
@@ -166,7 +166,7 @@ zotero:
 ## 范围外（本阶段明确不做）
 
 - Tauri / React 桌面界面（下阶段）
-- "打开论文"的 HTTP 会话端点（对话会话管理，属桌面阶段）
+- 按条目返回解析内容（markdown + 章节 + 图片）的端点，以及对话会话管理（均属桌面阶段）
 - 多论文统一索引（跨论文检索）
 - 引用图（Semantic Scholar / PDF 引用列表结构化）
 - Zotero 写操作、笔记/标注读取
