@@ -117,7 +117,7 @@ uvicorn paper_reader.server:app
 | `/help` | 帮助 |
 | `/overview` | 重新显示概览 |
 | `/sections` | 列出所有章节 |
-| `/quit` | 退出 |
+| `exit` / `/quit` | 退出 |
 
 ## License
 

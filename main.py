@@ -14,7 +14,7 @@ def show_overview(ctx: ConversationContext) -> None:
     print("\n" + "=" * 60)
     print(ctx.get_overview())
     print("=" * 60)
-    print("\n直接输入问题即可。输入 /help 查看命令，/quit 或 /exit 退出。\n")
+    print("\n直接输入问题即可。输入 /help 查看命令，exit、/quit 或 /exit 退出。\n")
 
 
 def show_help() -> None:
@@ -23,6 +23,7 @@ def show_help() -> None:
   /overview  - 重新显示论文概览
   /sections  - 列出所有章节
   /help      - 显示帮助
+  exit       - 退出（不用斜杠也行）
   /quit      - 退出
   /exit      - 退出
 
@@ -100,7 +101,7 @@ def interactive_loop(paper_path: str) -> None:
         if not user_input:
             continue
 
-        if user_input in ("/quit", "/exit"):
+        if user_input in ("/quit", "/exit", "exit"):
             print("再见！")
             break
         elif user_input == "/help":
@@ -225,7 +226,7 @@ def _zotero_loop(lib: ZoteroLibrary) -> None:
             break
         if not user_input:
             continue
-        if user_input in ("/quit", "/exit"):
+        if user_input in ("/quit", "/exit", "exit"):
             print("\n再见！")
             break
         elif user_input == "/help":
@@ -319,7 +320,7 @@ def _zotero_help() -> None:
   /collections   浏览收藏夹树
   /search <kw>   显式搜索
   /help          帮助
-  /quit          退出
+  exit / /quit   退出
 """)
 
 
