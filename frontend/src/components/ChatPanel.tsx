@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Input, Button, List, Typography, Collapse, Tag, Empty, Space } from 'antd'
+import { Input, List, Typography, Collapse, Tag, Empty, Space } from 'antd'
 import { postChatSSE } from '../api/sse'
 
 interface Props {
