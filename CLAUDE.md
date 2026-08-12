@@ -32,8 +32,10 @@ paper_reader/
   ├── memory.py          # Paper Memory 抽取 + 缓存读写
   ├── parser.py          # PyMuPDF 解析器（旧，保留不用）
   ├── llm.py             # LLM 客户端 + 路由 + 配置加载
-  └── context.py         # 对话上下文 + BGE-M3 向量检索 + 窗口构建
-tests/                   # 146 个测试，全过
+  ├── context.py         # 对话上下文 + BGE-M3 向量检索 + 窗口构建
+  ├── zotero.py           # Zotero 只读数据层（collections/items/search/get_item/resolve_pdf）
+  └── server.py           # FastAPI：/api/zotero/* 只读接口
+tests/                   # 170 个测试，全过
 config.example.yaml      # 配置模板（提交）
 config.yaml              # 实际配置（gitignore）
 .venv/                   # 虚拟环境（gitignore）
@@ -117,8 +119,9 @@ LLMToolResponse       — LLM 返回解析 {text, tool_calls}
 - [x] **MinerU v1/v2 格式兼容**（content_list.json 平铺格式 + content_list_v2.json 分页嵌套格式）
 - [x] 配置文件：每个模型独立配 api_key、base_url、provider
 - [x] **Paper Memory 结构化理解** — LLM 抽取论文的研究问题、方法、贡献等 10 个字段，独立缓存 `{sha256}-memory.json`，注入对话 system prompt
-- [x] 146 个测试全覆盖（单元 + 集成，含 embedding mock）
+- [x] 170 个测试全覆盖（单元 + 集成，含 embedding mock）
 - [x] 中文 README + docs/architecture.md
+- [x] **Zotero 连接（CLI + API）** — `zotero.py` 只读读取 Windows 侧 Zotero sqlite（`/mnt/c/Users/ASUS/Zotero`），解析条目元数据（标题/作者/年份/期刊/DOI/收藏夹）+ 定位 PDF（storage: 路径 → `storage/{attachment_key}/{filename}`）；`main.py --zotero` 搜索/收藏夹选论文进入对话；FastAPI 暴露 collections/items/search/items/{id} 四端点，前端/模型 agent 复用
 
 ## 进行中
 
@@ -181,11 +184,11 @@ LLMToolResponse       — LLM 返回解析 {text, tool_calls}
 - Zotero：**只读**（列出条目 + 打开论文）
 
 **规划任务：**
-- [ ] 摸清 Zotero 数据库 schema（`~/.zotero/zotero.sqlite` items/collections/attachments 表 + `storage/` 附件）
-- [ ] FastAPI 后端：Zotero 条目列表 API + 打开论文（走 paper-master 完整管线）
+- [x] 摸清 Zotero 数据库 schema
+- [x] FastAPI 后端：Zotero 条目列表 API + 打开论文
 - [ ] Tauri 工程脚手架 + 双击启动自动拉起 FastAPI
 - [ ] React 前端：论文列表 + 收藏夹树 + 阅读区（markdown 渲染）+ 对话区
-- [ ] 本地知识库：多论文统一索引（跨论文检索/对比基础）
+- [ ] 本地知识库：多论文统一索引
 
 ### P5：暂缓
 
@@ -227,7 +230,9 @@ source .venv/bin/activate
 
 python3 main.py paper.pdf                     # 单篇阅读
 python3 main.py --batch papers/               # 批量预热
-python3 -m pytest tests/ -v                   # 测试 (146)
+python3 main.py --zotero                 # 从 Zotero 库选论文阅读
+uvicorn paper_reader.server:app          # FastAPI（Zotero 检索接口）
+python3 -m pytest tests/ -v                   # 测试 (170)
 GIT_SSL_NO_VERIFY=true git push               # 推送
 ```
 
