@@ -164,6 +164,53 @@ class OpenAIClient(LLMClient):
 
         return LLMToolResponse(text=msg.content, tool_calls=tool_calls)
 
+    def chat_with_tools_stream(self, messages, tools, system_prompt=""):
+        """Streaming variant of chat_with_tools.
+
+        Yields tuples: ("text_delta", str) for each text chunk, and finally
+        ("tool_calls", list[dict]) — the list is empty if no tools were called.
+        """
+        api_messages = []
+        if system_prompt:
+            api_messages.append({"role": "system", "content": system_prompt})
+        api_messages.extend(messages)
+
+        stream = self._client.chat.completions.create(
+            model=self.model,
+            messages=api_messages,
+            tools=tools if tools else None,
+            tool_choice="auto" if tools else None,
+            max_tokens=4096,
+            stream=True,
+        )
+
+        tc_accum: dict[int, dict] = {}
+        for chunk in stream:
+            delta = chunk.choices[0].delta
+            if delta.content:
+                yield ("text_delta", delta.content)
+            if delta.tool_calls:
+                for tcd in delta.tool_calls:
+                    acc = tc_accum.setdefault(
+                        tcd.index, {"id": None, "name": None, "arguments": ""}
+                    )
+                    if tcd.id:
+                        acc["id"] = tcd.id
+                    if tcd.function and tcd.function.name:
+                        acc["name"] = tcd.function.name
+                    if tcd.function and tcd.function.arguments:
+                        acc["arguments"] += tcd.function.arguments
+
+        tool_calls = []
+        for idx in sorted(tc_accum):
+            acc = tc_accum[idx]
+            tool_calls.append({
+                "id": acc["id"],
+                "name": acc["name"],
+                "arguments": acc["arguments"],
+            })
+        yield ("tool_calls", tool_calls)
+
 
 SYSTEM_PROMPT = """你是一个论文阅读助手。你根据提供的论文内容帮助用户理解学术论文，用中文回答问题。
 
