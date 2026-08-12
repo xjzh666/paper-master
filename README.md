@@ -13,7 +13,20 @@
 ```bash
 git clone https://github.com/xjzh666/paper-master.git
 cd paper-master
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
+```
+
+> 依赖安装在虚拟环境 `.venv` 中（包括 MinerU CLI）。**每次使用前必须先激活虚拟环境**，否则 `mineru` 命令找不到，解析 PDF 会报 `No such file or directory: 'mineru'`。
+
+## 使用
+
+> 所有 `python3 main.py` 命令都需在已激活的虚拟环境中运行：
+
+```bash
+cd /home/xiejiezhen/paper-master
+source .venv/bin/activate
 ```
 
 ## 配置

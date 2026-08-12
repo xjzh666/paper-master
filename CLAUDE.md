@@ -1,5 +1,9 @@
 # CLAUDE.md — Paper Master 项目接手文档
 
+## 文档维护约定（重要）
+
+**每次代码修改完成后、确认一个功能做好后，都必须同步更新本文件**（架构、已完成、进行中、下一步优先级、测试数、数据模型、设计决策等受影响部分），并随改动一起提交。文档落后于代码视为缺陷。
+
 ## 项目概述
 
 paper-master 是一个科研智能体（Research Agent），帮助研究人员"读论文、查论文、思考 idea"。当前处于早期阶段，先构建扎实的论文理解和检索基础设施，逐步从"论文问答 RAG"演进为能够理解、比较、产生新想法的科研伙伴。目前功能：打开 PDF → MinerU 版面解析 → BGE-M3 向量编码 → Paper Memory 结构化抽取 → 展示摘要和目录 → 交互式中文论文对话。
@@ -107,7 +111,9 @@ LLMToolResponse       — LLM 返回解析 {text, tool_calls}
 - [x] **模型路由**：窗口有图片/表格 → vision 模型；纯文字 → text 模型（带 `[路由: xxx]` 日志）
 - [x] **对话上下文管理**（历史记录、章节查找、概览生成）
 - [x] **CLI 交互循环**（/help, /overview, /sections, /quit, /exit）
-- [x] **全中文**：系统提示词、UI 提示、LLM 回答均为中文
+- [x] **中文回答 / 英文工具调用**：LLM 回答为中文，工具调用参数用英文（论文是英文，检索匹配更好）
+- [x] **检索瘦身**：chunk 阈值 480→240 tokens，`search_paper` window=1→0，返回量从 13-16K 降到 3-5K
+- [x] **压缩 off-by-one 修复**：`KEEP_RECENT_ROUNDS=3` 保留最近 3 轮完整，修复"工具结果被读前已压"导致的无限检索循环
 - [x] **MinerU v1/v2 格式兼容**（content_list.json 平铺格式 + content_list_v2.json 分页嵌套格式）
 - [x] 配置文件：每个模型独立配 api_key、base_url、provider
 - [x] **Paper Memory 结构化理解** — LLM 抽取论文的研究问题、方法、贡献等 10 个字段，独立缓存 `{sha256}-memory.json`，注入对话 system prompt
@@ -116,7 +122,7 @@ LLMToolResponse       — LLM 返回解析 {text, tool_calls}
 
 ## 进行中
 
-（无）
+- **P4 桌面应用 + 本地知识库**：技术选型已定（Tauri + React + TS + Ant Design + FastAPI），待开始开发。PDF 用 markdown 渲染、Zotero 只读、Tauri 双击启动自动拉起 FastAPI
 
 ## 下一步优先级
 
@@ -145,12 +151,15 @@ LLMToolResponse       — LLM 返回解析 {text, tool_calls}
 ### P2：Tool Result 压缩 ✅ 已完成
 
 - [x] `_smart_truncate(text, max_chars=300)` — 句子边界智能截断，避免断句
-- [x] `_compact_messages(messages, current_round)` — 每轮发送前压缩：最新轮保留完整，往轮替换为 observation 摘要
+- [x] `_compact_messages(messages, current_round)` — 每轮发送前压缩，保留最近 `KEEP_RECENT_ROUNDS=3` 轮完整，更早的替换为 observation 摘要
 - [x] `record_observation` 工具 — LLM 同一轮内顺手记录，不增加额外 API 调用
 - [x] 降级策略：LLM 不调 record_observation 时自动回退截断
 - [x] Observation 注入 system prompt — 累积的观察作为"已知信息"注入
 - [x] 每次 `run()` 调用重置 `_tool_round_map` 和 `_observations`，跨对话不污染
 - [x] `round_num` 字段解决 observation-to-round 的索引映射问题
+- [x] **off-by-one 修复**：压缩阈值 `round_num < current_round - KEEP_RECENT_ROUNDS`，保证工具结果第一次被模型读到前完整保留（此前早压一轮导致模型永远读不到完整结果，陷入无限检索）
+- [x] **检索瘦身**：chunk 阈值 480→240 tokens（约 960 字），`search_paper` window=1→0，返回量从 13-16K 降到 3-5K
+- [x] **工具调用语言**：工具参数（查询、章节引用、观察记录）一律英文（论文是英文），仅最终回答中文；工具描述改写为英文
 
 ### P3：引用溯源（下一步）
 
@@ -160,8 +169,28 @@ LLMToolResponse       — LLM 返回解析 {text, tool_calls}
 - [ ] system prompt 引导 LLM 在 record_observation 和最终回答中引用来源
 - [ ] 最终回答中标注来源 chunk / page_idx / 章节
 
-### P4：后续扩展
+### P4：桌面应用 + 本地知识库（当前方向，规划中）
 
+核心目标转向：把 paper-master 做成**本地桌面应用**（类似 Zotero），对接 Zotero 库里的论文，形成本地知识库。**暂不做"上网搜论文"**。
+
+**已确认的技术选型：**
+- 桌面外壳：**Tauri**（双击启动，自动拉起 FastAPI，不要求手动起服务）
+- 前端：**React + TypeScript + Ant Design**
+- 后端：**FastAPI**（复用 `paper_reader/`，Python 直接读 Zotero sqlite）
+- PDF 阅读：**渲染 MinerU 解析结果（markdown + 章节 + 图片）**，不集成 pdf.js
+- Zotero：**只读**（列出条目 + 打开论文）
+
+**规划任务：**
+- [ ] 摸清 Zotero 数据库 schema（`~/.zotero/zotero.sqlite` items/collections/attachments 表 + `storage/` 附件）
+- [ ] FastAPI 后端：Zotero 条目列表 API + 打开论文（走 paper-master 完整管线）
+- [ ] Tauri 工程脚手架 + 双击启动自动拉起 FastAPI
+- [ ] React 前端：论文列表 + 收藏夹树 + 阅读区（markdown 渲染）+ 对话区
+- [ ] 本地知识库：多论文统一索引（跨论文检索/对比基础）
+
+### P5：暂缓
+
+以下功能暂缓，等桌面应用稳定后再评估：
+- [ ] 上网搜论文（文献搜索）——**明确暂不做**
 - [ ] 多轮对话 query rewriting（代词和省略会降低检索精度）
 - [ ] 检索语义 section 过滤（"找实验结果"而非"找相似文本"）
 - [ ] 多论文对比（/load + /compare）
@@ -170,7 +199,7 @@ LLMToolResponse       — LLM 返回解析 {text, tool_calls}
 ## 用户当前配置
 
 用户使用两个不同的模型（config.yaml）:
-- text: deepseek-v4-pro @ api.deepseek.com
+- text: deepseek-v4-flash @ api.deepseek.com
 - vision: qwen3.5-plus @ dashscope.aliyuncs.com
 
 两者都用 OpenAI 兼容格式（provider: openai）。
@@ -181,13 +210,13 @@ LLMToolResponse       — LLM 返回解析 {text, tool_calls}
 2. **检索策略**：BGE-M3 混合检索（dense + sparse）。dense 覆盖语义匹配，sparse 覆盖术语精确匹配。numpy 暴力 cosine similarity，无外部向量数据库。alises + 标准化标签（Roman→Arabic + 中文）辅助精确引用
 3. **RAG 定位**：RAG 应作为 Agent 可调用的工具，而非整个系统的核心流程。Agent 决定什么时候需要检索，不强制每轮走 RAG
 4. **路由规则**：检索窗口中包含图片/表格 → vision 模型；纯文字 → text 模型。路由日志 `[路由: vision/text]` 开箱可见。未来 Query Router 将区分定位/理解/比较三类问题
-5. **系统提示词**：两个模型共用一个中文 SYSTEM_PROMPT
+5. **系统提示词**：两个模型共用一个 SYSTEM_PROMPT。工具调用参数用英文（论文是英文，检索匹配更好），最终回答用中文
 6. **缓存策略**：PDF 内容 sha256 → `~/.cache/paper-master/{hash}.json`（含 blocks + chunks + embeddings + lexical_weights + aliases）+ `{hash}-memory.json`（Paper Memory，独立文件用于生命周期解耦）。MinerU 原始输出留在 `~/.cache/paper-master/mineru-output/`（持久化，不自动清理）。batch 分三阶段（MinerU 解析 → BGE-M3 编码 → Memory 抽取）
 7. **图片加载**：ContentBlock.image_bytes 懒加载，仅 LLM 需要时才读文件
 8. **暂不引入 LangChain/LangGraph**：当前是简单流水线。后续 Agent 框架再评估，在此之前的工具化用纯函数接口
 9. **旧 parser.py 保留不动**，mineru_parser.py 是主要解析路径
 10. **Paper Memory**：论文理解不止依赖 chunk embedding，LLM 一次性抽取 10 个结构化字段（研究问题、动机、方法、实验、局限、关键词等），存入独立缓存。当前单论文直接注入 system prompt，后续多论文时改造为 Agent 工具按需调用。关键词留作多论文路由筛选
-11. **Tool Result 压缩**：不增加额外 API 调用，利用 LLM 同一轮的多工具调用能力（record_observation + search_paper 在同一个 tool_calls 里发出）。往轮 tool result 替换为 observation 摘要，LLM 不调 record_observation 时降级为智能截断。最新一轮结果始终保留完整
+11. **Tool Result 压缩**：不增加额外 API 调用，利用 LLM 同一轮的多工具调用能力（record_observation + search_paper 在同一个 tool_calls 里发出）。保留最近 `KEEP_RECENT_ROUNDS=3` 轮完整（保证模型能回读证据，避免"证据被压后反复重搜"），更早的替换为 observation 摘要，无 observation 时降级为智能截断。压缩阈值必须严格保证"工具结果在第一次被模型读到前完整"（曾有 off-by-one bug）
 12. **三层记忆架构**：L1 Conversation Memory（messages，最新轮完整，往轮压缩）、L2 Observation Memory（结构化观察，`self._observations`，注入 system prompt）、L3 Evidence Memory（来源追溯，Observation.sources 字段已就绪，P3 完善）
 
 ## 常用命令
