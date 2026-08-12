@@ -110,6 +110,48 @@ uvicorn paper_reader.server:app
 | `GET /api/zotero/search?q=` | 标题/作者搜索 |
 | `GET /api/zotero/items/{id}` | 单条目详情 |
 
+## Web 版（浏览器使用）
+
+paper-master 现在是**本地 Web 应用**：浏览器访问 `localhost:8000`，在 Zotero 库里选论文 → 异步解析 → 阅读 markdown + SSE 流式对话。API 与前端单端口托管，无需分开起服务。
+
+### 安装 / 准备
+
+```bash
+# 后端依赖（含 MinerU）已装好后，构建前端产物：
+cd frontend && npm install && npm run build
+# 产物生成到 frontend/dist/，server.py 自动托管
+```
+
+### 启动（生产，单端口）
+
+**Windows：双击 `launch.bat`** —— 自动拉起 WSL 里的 uvicorn（`127.0.0.1:8000`）并打开浏览器。
+
+手动启动等同：
+
+```bash
+cd /home/xiejiezhen/paper-master
+source .venv/bin/activate
+uvicorn paper_reader.server:app --host 127.0.0.1 --port 8000
+# 浏览器打开 http://localhost:8000
+```
+
+### 开发（前端热更新）
+
+```bash
+# 终端 1：先起后端
+source .venv/bin/activate && uvicorn paper_reader.server:app
+
+# 终端 2：前端 Vite HMR（默认 5173 端口，代理到 8000）
+cd frontend && npm run dev
+```
+
+### Web 版功能
+
+- 左栏：Zotero 收藏夹树 + 论文列表（搜索/按收藏夹筛选）
+- 中间：SSE 流式对话（`tool_start` / `answer_chunk` 增量渲染）
+- 右栏：MinerU 解析的 markdown 阅读区（章节 + 图片）
+- 首次打开论文后台异步解析（MinerU），前端轮询 `/status` 到 `ready`
+
 ### 命令
 
 | 命令 | 说明 |

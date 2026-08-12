@@ -27,19 +27,24 @@ GitHub: https://github.com/xjzh666/paper-master
 main.py                  # CLI 入口，交互循环 + 批量解析
 paper_reader/
   ├── blocks.py          # 数据模型（ContentBlock / SemanticChunk / PaperMemory / PaperDocument）
-  ├── agent.py           # Agent 循环 + 工具定义 + 压缩 + Observation Memory
+  ├── agent.py           # Agent 循环 + 工具定义 + 压缩 + Observation Memory + 流式 run_stream()
   ├── mineru_parser.py   # MinerU 解析器 + sha256 缓存
   ├── memory.py          # Paper Memory 抽取 + 缓存读写
   ├── parser.py          # PyMuPDF 解析器（旧，保留不用）
   ├── llm.py             # LLM 客户端 + 路由 + 配置加载
   ├── context.py         # 对话上下文 + BGE-M3 向量检索 + 窗口构建
-  ├── zotero.py           # Zotero 只读数据层（collections/items/search/get_item/resolve_pdf）
-  └── server.py           # FastAPI：/api/zotero/* 只读接口
-tests/                   # 178 个测试，全过
+  ├── zotero.py          # Zotero 只读数据层（collections/items/search/get_item/resolve_pdf）
+  ├── papers.py          # Web 会话仓库：Session 管理 + 异步 MinerU 解析 + chat_events SSE 事件源
+  └── server.py          # FastAPI：/api/zotero/* + /api/papers/* 接口 + 前端静态托管（mount("/")）
+frontend/                # Web 前端（React + TypeScript + Ant Design + Vite）
+  ├── src/               # App 三栏：论文列表 / markdown 阅读区 / SSE 对话区 + api client
+  └── dist/              # 构建产物（npm run build 输出，server.py 静态托管）
+tests/                   # 190 个测试，全过
 config.example.yaml      # 配置模板（提交）
 config.yaml              # 实际配置（gitignore）
 .venv/                   # 虚拟环境（gitignore）
 papers/                  # 测试用 PDF 论文（gitignore）
+launch.bat               # Windows 双击启动脚本（拉起 uvicorn + 打开浏览器）
 ```
 
 ### 当前数据流（Agent + 工具模式，已实现）
@@ -68,6 +73,32 @@ PDF → MinerU CLI (VLM 版面分析) → content_list_v2.json + images/ + .md
 ```
 
 遗留的简单路径 `LLMRouter.answer()` 仍然可用，但主要路径是 PaperAgent。
+
+**Web 版数据流（浏览器 + 异步解析 + SSE 对话）：**
+```
+浏览器 (localhost:8000)
+  → GET /api/zotero/*              — 论文列表 / 收藏夹 / 搜索（只读）
+  → POST /api/papers/open          — 选论文，返回 paper_id + status（ready | parsing）
+       ├─ 有缓存 → 直接 ready；无缓存 → 后台线程异步 MinerU 解析（不阻塞）
+       └─ 前端轮询 /api/papers/{id}/status 直到 ready
+  → GET /api/papers/{id}/overview|content|images/*  — 摘要 / markdown 阅读区 / 图片
+  → POST /api/papers/{id}/chat     — SSE 对话（StreamingResponse）
+       → papers.chat_events() 在 worker 线程驱动 PaperAgent.run_stream()
+       → 队列转发 on_event → SSE 帧：event: <etype>\ndata: <json>\n\n
+```
+
+**SSE 事件协议**（`papers.chat_events` yield `(etype, payload)`，前端 `sse.ts` 解析）：
+
+| event | payload | 说明 |
+|-------|---------|------|
+| `tool_start` | `{name}` | Agent 开始调用工具 |
+| `tool_result` | `{name, chars, resources}` | 工具返回摘要（正文在服务端已压缩） |
+| `answer_chunk` | `{text}` | 流式答案片段（增量追加） |
+| `clear` | `{}` | 清空面板（新一轮回答开始前） |
+| `done` | `{}` | 本轮结束 |
+| `error` | `{message}` | 出错（如 paper not parsed） |
+
+> Web 首次解析后**不**做 Paper Memory 抽取（仅加载缓存 `{sha256}-memory.json`），CLI 会抽取；记忆缺失时 agent 正常降级。留待后续加后台抽取。
 
 ### 数据模型
 
@@ -120,13 +151,19 @@ LLMToolResponse       — LLM 返回解析 {text, tool_calls}
 - [x] 配置文件：每个模型独立配 api_key、base_url、provider
 - [x] **Paper Memory 结构化理解** — LLM 抽取论文的研究问题、方法、贡献等 10 个字段，独立缓存 `{sha256}-memory.json`，注入对话 system prompt
 - [x] **PaperAgent 流式改造** — 把 `run()` 方法体重构为 `_run_loop(question, history, memory, on_event, stream)`，新增 `run_stream()` 事件回调入口（事件协议：`answer_chunk`/`clear`/`tool_start`/`tool_result`）；非流式 `run()` 行为不变（调用 `chat_with_tools`）
-- [x] 178 个测试全覆盖（单元 + 集成，含 embedding mock）
+- [x] 190 个测试全覆盖（单元 + 集成，含 embedding mock + SSE 事件序列）
 - [x] 中文 README + docs/architecture.md
 - [x] **Zotero 连接（CLI + API）** — `zotero.py` 只读读取 Windows 侧 Zotero sqlite（`/mnt/c/Users/ASUS/Zotero`），解析条目元数据（标题/作者/年份/期刊/DOI/收藏夹）+ 定位 PDF（storage: 路径 → `storage/{attachment_key}/{filename}`）；`main.py --zotero` 搜索/收藏夹选论文进入对话；FastAPI 暴露 collections/items/search/items/{id} 四端点，前端/模型 agent 复用
+- [x] **P4 Web 应用（桌面形态改为 Web 应用）** — 从 Tauri 改为 Web 应用（理由见关键设计决策 #13）。已完成：
+  - [x] **papers.py 会话仓库** — Session 管理（论文→会话单例）、`open_paper` 后台线程异步 MinerU 解析（`/status` 轮询 ready）、`chat_events` 队列转发 SSE 事件
+  - [x] **/api/papers/* 端点** — `open` / `{id}/status` / `{id}/overview` / `{id}/content`（markdown 图片重写为 `/api/papers/{id}/images/*`）/ `{id}/chat`（SSE 真流式）
+  - [x] **前端脚手架 + 三栏布局** — React + TypeScript + Ant Design + Vite；左栏论文列表/收藏夹、中间 SSE 对话面板、右侧 markdown 阅读面板
+  - [x] **API client + SSE 解析器** — `frontend/src/api/client.ts` + `sse.ts`（按 `event:` 帧解析并分发 tool_start/answer_chunk/clear/done/error）
+  - [x] **生产静态托管** — `server.py` 末尾 `mount("/", StaticFiles(html=True))`，单端口 8000 同时服务 API 与前端；`launch.bat` Windows 双击启动
 
 ## 进行中
 
-- **P4 桌面应用 + 本地知识库**：技术选型已定（Tauri + React + TS + Ant Design + FastAPI），待开始开发。PDF 用 markdown 渲染、Zotero 只读、Tauri 双击启动自动拉起 FastAPI
+- **P4 后续：本地知识库（下一版）** — Web 应用 MVP 已可用（列表→打开→解析→对话→阅读）；下一版把多论文统一索引做成本地知识库（见下一步优先级）
 
 ## 下一步优先级
 
@@ -173,23 +210,25 @@ LLMToolResponse       — LLM 返回解析 {text, tool_calls}
 - [ ] system prompt 引导 LLM 在 record_observation 和最终回答中引用来源
 - [ ] 最终回答中标注来源 chunk / page_idx / 章节
 
-### P4：桌面应用 + 本地知识库（当前方向，规划中）
+### P4：Web 应用（当前方向，MVP 已完成）
 
-核心目标转向：把 paper-master 做成**本地桌面应用**（类似 Zotero），对接 Zotero 库里的论文，形成本地知识库。**暂不做"上网搜论文"**。
+核心目标转向：把 paper-master 做成**本地 Web 应用**（类似 Zotero），对接 Zotero 库里的论文，浏览器访问 `localhost:8000` 单端口使用。**暂不做"上网搜论文"**。
 
 **已确认的技术选型：**
-- 桌面外壳：**Tauri**（双击启动，自动拉起 FastAPI，不要求手动起服务）
-- 前端：**React + TypeScript + Ant Design**
-- 后端：**FastAPI**（复用 `paper_reader/`，Python 直接读 Zotero sqlite）
+- 形态：**Web 应用**（不再用 Tauri，理由见关键设计决策 #13）
+- 前端：**React + TypeScript + Ant Design**（Vite 构建）
+- 后端：**FastAPI**（复用 `paper_reader/`，Python 直接读 Zotero sqlite + 单端口静态托管）
 - PDF 阅读：**渲染 MinerU 解析结果（markdown + 章节 + 图片）**，不集成 pdf.js
 - Zotero：**只读**（列出条目 + 打开论文）
+- 启动：**`launch.bat`** Windows 双击（拉起 uvicorn + 打开浏览器），或手动 `uvicorn paper_reader.server:app`
 
-**规划任务：**
+**规划任务（Web 应用 MVP）：**
 - [x] 摸清 Zotero 数据库 schema
 - [x] FastAPI 后端：Zotero 条目列表 API + 打开论文
-- [ ] Tauri 工程脚手架 + 双击启动自动拉起 FastAPI
-- [ ] React 前端：论文列表 + 收藏夹树 + 阅读区（markdown 渲染）+ 对话区
-- [ ] 本地知识库：多论文统一索引
+- [x] `papers.py` 会话仓库 + 异步解析 + SSE 对话
+- [x] React 前端：论文列表 + 收藏夹树 + 阅读区（markdown 渲染）+ 对话区
+- [x] 生产静态托管（单端口）+ `launch.bat`
+- [ ] **本地知识库：多论文统一索引（下一版）** — 当前单论文会话；下一版做跨论文检索/统一索引
 
 ### P5：暂缓
 
@@ -222,6 +261,8 @@ LLMToolResponse       — LLM 返回解析 {text, tool_calls}
 10. **Paper Memory**：论文理解不止依赖 chunk embedding，LLM 一次性抽取 10 个结构化字段（研究问题、动机、方法、实验、局限、关键词等），存入独立缓存。当前单论文直接注入 system prompt，后续多论文时改造为 Agent 工具按需调用。关键词留作多论文路由筛选
 11. **Tool Result 压缩**：不增加额外 API 调用，利用 LLM 同一轮的多工具调用能力（record_observation + search_paper 在同一个 tool_calls 里发出）。保留最近 `KEEP_RECENT_ROUNDS=3` 轮完整（保证模型能回读证据，避免"证据被压后反复重搜"），更早的替换为 observation 摘要，无 observation 时降级为智能截断。压缩阈值必须严格保证"工具结果在第一次被模型读到前完整"（曾有 off-by-one bug）
 12. **三层记忆架构**：L1 Conversation Memory（messages，最新轮完整，往轮压缩）、L2 Observation Memory（结构化观察，`self._observations`，注入 system prompt）、L3 Evidence Memory（来源追溯，Observation.sources 字段已就绪，P3 完善）
+13. **桌面形态从 Tauri 改为 Web 应用**：早期定 Tauri，后改为纯 Web 应用（React+Vite 前端 + FastAPI 单端口静态托管 + `launch.bat` 双击启动）。理由：GPU 与 Zotero 数据都在 WSL2，浏览器天然跨 Windows/WSL 边界（无需 WSLg）；免装 Rust 工具链；单端口部署简单。代价：无系统托盘/原生窗口，但当前功能（读 PDF + 对话）浏览器足够。`launch.bat` 用 `wsl -e bash -c` 拉起 uvicorn 再开浏览器
+14. **静态托管挂在 `/`**：`server.py` 的 `create_app(data_dir=None, frontend_dist=None)` 在**所有 API 路由之后** `mount("/", StaticFiles(html=True))`（默认指向 `frontend/dist`）。FastAPI 按注册顺序匹配，API 路由优先，前端 SPA 兜底。`frontend_dist` 可显式传入（测试用临时目录），dist 不存在时静默跳过（纯 API 模式不受影响）
 
 ## 常用命令
 
@@ -229,11 +270,16 @@ LLMToolResponse       — LLM 返回解析 {text, tool_calls}
 cd /home/xiejiezhen/paper-master
 source .venv/bin/activate
 
-python3 main.py paper.pdf                     # 单篇阅读
+python3 main.py paper.pdf                     # 单篇阅读（CLI）
 python3 main.py --batch papers/               # 批量预热
-python3 main.py --zotero                 # 从 Zotero 库选论文阅读
-uvicorn paper_reader.server:app          # FastAPI（Zotero 检索接口）
-python3 -m pytest tests/ -v                   # 测试 (178)
+python3 main.py --zotero                 # 从 Zotero 库选论文阅读（CLI）
+
+uvicorn paper_reader.server:app          # FastAPI（Web 版后端，单端口 8000 托管 API + 前端）
+launch.bat                             # Windows 双击启动（拉起 uvicorn + 打开浏览器）
+
+cd frontend && npm run dev              # 前端开发模式（Vite HMR，需后端已起）
+cd frontend && npm run build            # 构建前端到 dist/（server.py 静态托管）
+python3 -m pytest tests/ -v                   # 测试 (190)
 GIT_SSL_NO_VERIFY=true git push               # 推送
 ```
 

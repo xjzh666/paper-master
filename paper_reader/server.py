@@ -27,7 +27,8 @@ def _config_data_dir() -> Path:
         )
 
 
-def create_app(data_dir: Path | None = None) -> FastAPI:
+def create_app(data_dir: Path | None = None,
+               frontend_dist: str | None = None) -> FastAPI:
     app = FastAPI(title="paper-master", version="0.1.0")
 
     def get_library():
@@ -112,6 +113,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 yield f"event: {etype}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
         return StreamingResponse(gen(), media_type="text/event-stream")
+
+    if frontend_dist is None:
+        frontend_dist = str(Path(__file__).resolve().parent.parent / "frontend" / "dist")
+    if Path(frontend_dist).is_dir():
+        from fastapi.staticfiles import StaticFiles
+        app.mount("/", StaticFiles(directory=frontend_dist, html=True),
+                  name="frontend")
 
     return app
 
