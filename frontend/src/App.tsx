@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { Layout } from 'antd'
 import PaperListSidebar from './components/PaperListSidebar'
 import ChatPanel from './components/ChatPanel'
@@ -14,15 +14,20 @@ export default function App() {
   const [error, setError] = useState('')
   const [overview, setOverview] = useState<PaperOverview | null>(null)
   const [markdown, setMarkdown] = useState('')
+  const pollRef = useRef<number | null>(null)
+  const paperIdRef = useRef<string | null>(null)
 
   const loadReady = async (pid: string) => {
+    if (paperIdRef.current !== pid) return
     const [ov, ct] = await Promise.all([api.overview(pid), api.content(pid)])
+    if (paperIdRef.current !== pid) return
     setOverview(ov)
     setMarkdown(ct.markdown)
     setStatus('ready')
   }
 
   const openPaper = async (item: ZoteroItem) => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
     setPaperId(null)
     setOverview(null)
     setMarkdown('')
@@ -31,6 +36,7 @@ export default function App() {
     try {
       const res = await api.openPaper(item.item_id)
       setPaperId(res.paper_id)
+      paperIdRef.current = res.paper_id
       if (res.status === 'ready') {
         await loadReady(res.paper_id)
       } else {
@@ -43,16 +49,22 @@ export default function App() {
   }
 
   const pollStatus = (pid: string) => {
-    const timer = setInterval(async () => {
+    if (pollRef.current) clearInterval(pollRef.current)
+    pollRef.current = window.setInterval(async () => {
       try {
         const st = await api.paperStatus(pid)
+        if (paperIdRef.current !== pid) return
         if (st.status === 'ready') {
-          clearInterval(timer)
+          if (pollRef.current) clearInterval(pollRef.current)
+          pollRef.current = null
           await loadReady(pid)
         } else if (st.status === 'error') {
-          clearInterval(timer)
-          setError(st.message ?? '解析失败')
-          setStatus('error')
+          if (pollRef.current) clearInterval(pollRef.current)
+          pollRef.current = null
+          if (paperIdRef.current === pid) {
+            setError(st.message ?? '解析失败')
+            setStatus('error')
+          }
         }
       } catch {
         // keep polling
