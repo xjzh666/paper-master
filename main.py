@@ -7,6 +7,7 @@ from paper_reader.mineru_parser import MinerUParser
 from paper_reader.llm import load_config, LLMRouter
 from paper_reader.context import ConversationContext
 from paper_reader.memory import extract_memory, load_memory_cache
+from paper_reader.zotero import ZoteroItem, ZoteroLibrary, resolve_zotero_data_dir
 
 
 def show_overview(ctx: ConversationContext) -> None:
@@ -195,10 +196,133 @@ def batch_parse(papers_dir: str) -> None:
           f"{phase3_ok} memory")
 
 
+def zotero_interactive() -> None:
+    try:
+        config = load_config("config.yaml")
+    except FileNotFoundError:
+        config = None
+    try:
+        data_dir = resolve_zotero_data_dir(config)
+    except FileNotFoundError as e:
+        print(f"错误: {e}")
+        sys.exit(1)
+    print(f"正在连接 Zotero 库: {data_dir}")
+    lib = ZoteroLibrary(data_dir)
+    try:
+        _zotero_loop(lib)
+    finally:
+        lib.close()
+
+
+def _zotero_loop(lib: ZoteroLibrary) -> None:
+    session = PromptSession()
+    current_items: list[ZoteroItem] = []
+    while True:
+        try:
+            user_input = session.prompt("\n> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n再见！")
+            break
+        if not user_input:
+            continue
+        if user_input in ("/quit", "/exit"):
+            print("\n再见！")
+            break
+        elif user_input == "/help":
+            _zotero_help()
+        elif user_input == "/collections":
+            current_items = _pick_collection_items(lib, session)
+        elif user_input.startswith("/search "):
+            current_items = _search_and_show(lib, user_input[len("/search "):].strip())
+        elif user_input.isdigit():
+            idx = int(user_input) - 1
+            if 0 <= idx < len(current_items):
+                _open_item(lib, current_items[idx])
+            else:
+                print("序号无效")
+        else:
+            current_items = _search_and_show(lib, user_input)
+
+
+def _search_and_show(lib: ZoteroLibrary, keyword: str) -> list[ZoteroItem]:
+    if not keyword:
+        return []
+    items = lib.search(keyword)
+    _show_items(items)
+    print("\n输入序号打开该论文，或继续搜索")
+    return items
+
+
+def _pick_collection_items(lib: ZoteroLibrary, session) -> list[ZoteroItem]:
+    collections = lib.collections()
+    top = [c for c in collections if c.parent_id is None]
+    rows: list[tuple] = []
+
+    def walk(cols, depth):
+        for c in cols:
+            rows.append((c, depth))
+            walk([x for x in collections if x.parent_id == c.collection_id], depth + 1)
+
+    walk(top, 0)
+    for i, (c, d) in enumerate(rows, 1):
+        print(f"[{i}] {'  ' * d}{c.name} ({c.item_count})")
+    choice = session.prompt("选收藏夹(0 返回)> ").strip()
+    if not choice.isdigit():
+        return []
+    n = int(choice)
+    if n == 0:
+        return []
+    if not (0 < n <= len(rows)):
+        print("序号无效")
+        return []
+    items = lib.items(collection_id=rows[n - 1][0].collection_id)
+    _show_items(items)
+    return items
+
+
+def _show_items(items: list[ZoteroItem]) -> None:
+    if not items:
+        print("(无匹配条目)")
+        return
+    for i, it in enumerate(items, 1):
+        colls = ", ".join(it.collections) if it.collections else "未分类"
+        pdf = "" if it.has_pdf else " (无 PDF)"
+        print(f"[{i}] {_format_authors(it.creators)} {it.year or '?'} — {it.title} ({colls}){pdf}")
+
+
+def _format_authors(creators: list[str]) -> str:
+    if not creators:
+        return ""
+    if len(creators) <= 3:
+        return ", ".join(creators)
+    return f"{', '.join(creators[:3])} et al."
+
+
+def _open_item(lib: ZoteroLibrary, item: ZoteroItem) -> None:
+    pdf = lib.resolve_pdf(item)
+    if pdf is None:
+        print("该条目没有可用 PDF，跳过")
+        return
+    print(f"正在加载论文: {pdf}")
+    interactive_loop(str(pdf))
+
+
+def _zotero_help() -> None:
+    print("""
+命令:
+  直接输入关键字  搜索论文（标题/作者）
+  /collections   浏览收藏夹树
+  /search <kw>   显式搜索
+  /help          帮助
+  /quit          退出
+""")
+
+
 def main():
     if len(sys.argv) < 2:
         print("用法: python main.py <论文.pdf>")
         print("      python main.py --batch <论文目录>")
+        print("      python main.py --zotero")
         sys.exit(1)
 
     if sys.argv[1] == "--batch":
@@ -206,6 +330,10 @@ def main():
             print("用法: python main.py --batch <论文目录>")
             sys.exit(1)
         batch_parse(sys.argv[2])
+        return
+
+    if sys.argv[1] == "--zotero":
+        zotero_interactive()
         return
 
     paper_path = sys.argv[1]

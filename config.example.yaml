@@ -9,3 +9,5 @@ models:
     model: gpt-4o
     api_key: "sk-your-api-key"
     # base_url: "https://your-endpoint/v1"  # 可选，使用第三方 API 时填写
+zotero:
+  data_dir: ""   # Zotero 数据目录（zotero.sqlite 所在目录），留空自动探测
