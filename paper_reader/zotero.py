@@ -1,8 +1,40 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
+
+
+@dataclass
+class ZoteroItem:
+    item_id: int
+    key: str
+    title: str
+    creators: list[str]
+    year: int | None
+    item_type: str
+    publication: str | None
+    doi: str | None
+    collections: list[str]
+    has_pdf: bool = False
+    pdf_path: Path | None = None
+
+
+_NON_READABLE = ("attachment", "note", "annotation")
+
+
+def _format_creator(first_name, last_name, field_mode):
+    if field_mode:
+        return last_name or first_name or ""
+    return " ".join(p for p in (first_name, last_name) if p)
+
+
+def _parse_year(date_value):
+    if not date_value:
+        return None
+    m = re.search(r"\d{4}", date_value)
+    return int(m.group()) if m else None
 
 
 @dataclass
@@ -42,3 +74,69 @@ class ZoteroLibrary:
         """)
         return [ZoteroCollection(r["collectionID"], r["collectionName"],
                                 r["parentCollectionID"], r["n"]) for r in cur]
+
+    def items(self, collection_id: int | None = None) -> list[ZoteroItem]:
+        ph = ",".join("?" * len(_NON_READABLE))
+        base = f"""
+            SELECT i.itemID, i.key, t.typeName
+            FROM items i JOIN itemTypes t ON i.itemTypeID = t.itemTypeID
+            WHERE t.typeName NOT IN ({ph})
+              AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
+        """
+        params: list = list(_NON_READABLE)
+        if collection_id is not None:
+            base += " AND i.itemID IN (SELECT itemID FROM collectionItems WHERE collectionID = ?)"
+            params.append(collection_id)
+        rows = self._conn.execute(base + " ORDER BY i.itemID", params).fetchall()
+        if not rows:
+            return []
+        ids = [r["itemID"] for r in rows]
+        return self._assemble(rows, ids)
+
+    def _assemble(self, rows, ids):
+        ph = ",".join("?" * len(ids))
+        meta: dict[int, dict[str, str]] = {}
+        for r in self._conn.execute(f"""
+            SELECT d.itemID, f.fieldName, v.value
+            FROM itemData d
+            JOIN fields f ON d.fieldID = f.fieldID
+            JOIN itemDataValues v ON d.valueID = v.valueID
+            WHERE d.itemID IN ({ph})
+        """, ids):
+            meta.setdefault(r["itemID"], {})[r["fieldName"]] = r["value"]
+        creators: dict[int, list[str]] = {}
+        for r in self._conn.execute(f"""
+            SELECT ic.itemID, cr.firstName, cr.lastName, cr.fieldMode
+            FROM itemCreators ic
+            JOIN creators cr ON ic.creatorID = cr.creatorID
+            JOIN creatorTypes ct ON ic.creatorTypeID = ct.creatorTypeID
+            WHERE ic.itemID IN ({ph}) AND ct.creatorType = 'author'
+            ORDER BY ic.itemID, ic.orderIndex
+        """, ids):
+            creators.setdefault(r["itemID"], []).append(
+                _format_creator(r["firstName"], r["lastName"], r["fieldMode"])
+            )
+        colls: dict[int, list[str]] = {}
+        for r in self._conn.execute(f"""
+            SELECT ci.itemID, c.collectionName
+            FROM collectionItems ci
+            JOIN collections c ON ci.collectionID = c.collectionID
+            WHERE ci.itemID IN ({ph})
+              AND c.collectionID NOT IN (SELECT collectionID FROM deletedCollections)
+        """, ids):
+            colls.setdefault(r["itemID"], []).append(r["collectionName"])
+        items = []
+        for r in rows:
+            m = meta.get(r["itemID"], {})
+            items.append(ZoteroItem(
+                item_id=r["itemID"],
+                key=r["key"],
+                title=m.get("title") or "(无标题)",
+                creators=creators.get(r["itemID"], []),
+                year=_parse_year(m.get("date")),
+                item_type=r["typeName"],
+                publication=m.get("publicationTitle") or None,
+                doi=m.get("DOI") or None,
+                collections=colls.get(r["itemID"], []),
+            ))
+        return items
