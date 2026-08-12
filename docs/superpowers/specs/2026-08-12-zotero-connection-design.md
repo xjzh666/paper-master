@@ -5,12 +5,13 @@
 
 ## 目标
 
-从 Zotero 本地库拿到论文 PDF + 元数据，不用手动拷贝文件，喂给现有 paper-master 管线（MinerU 解析 → 语义块 → Paper Memory → 对话循环）。CLI 接口先行，读取层做成独立模块，为后续 FastAPI 桌面应用铺路。
+从 Zotero 本地库拿到论文 PDF + 元数据，不用手动拷贝文件，喂给现有 paper-master 管线（MinerU 解析 → 语义块 → Paper Memory → 对话循环）。读取层做成独立模块（zotero.py，共享核心），同时提供两种消费接口：CLI（本阶段实际读论文的交互入口）和 FastAPI（后续桌面前端 / 模型 agent 复用的数据接口）。
 
 成功标准：
 1. `python3 main.py --zotero` 能列出/搜索 Zotero 库中的论文（含元数据：标题、作者、年份、类型、期刊、收藏夹）
 2. 选中论文后直接解析 PDF 进入现有对话循环，无需手动把 PDF 放进 `papers/`
-3. 读取层是只读的，不修改 Zotero 任何文件
+3. FastAPI 暴露 Zotero 收藏夹 / 条目 / 搜索接口，CLI 与 API 共用 `zotero.py` 数据层
+4. 读取层是只读的，不修改 Zotero 任何文件
 
 ## 已核实的现状（2026-08-12）
 
@@ -26,24 +27,30 @@
 ## 架构
 
 ```
-main.py --zotero
-  └─ zotero_interactive()               # 选论文循环（搜索/收藏夹）
-       └─ ZoteroLibrary.search(keyword)  # zotero.py 数据层
-       └─ ZoteroLibrary.resolve_pdf(item) → 路径
-            └─ interactive_loop(路径)    # 复用现有 加载+对话 整条链
-
-paper_reader/zotero.py                  # 新模块：Zotero 只读数据层
-  ZoteroLibrary(data_dir)
-    .collections() -> list[Collection]       # 树形收藏夹
+                      ┌─ main.py --zotero ── CLI（本阶段交互入口）
+                      │      └─ zotero_interactive()  选论文循环（搜索/收藏夹）
+                      │            └─ resolve_pdf(item) → 路径
+                      │                  └─ interactive_loop(路径)  复用现有加载+对话
+paper_reader/zotero.py ─┤
+  ZoteroLibrary(data_dir)   ← 共享核心（只读数据层）
+    .collections() -> list[ZoteroCollection]   # 收藏夹树
     .items(collection_id=None) -> list[ZoteroItem]
-    .search(keyword) -> list[ZoteroItem]     # 标题/作者模糊匹配
+    .search(keyword) -> list[ZoteroItem]       # 标题/作者模糊匹配
     .resolve_pdf(item) -> Path | None
     .close()
+                      │
+                      └─ paper_reader/server.py ── FastAPI（供桌面前端/模型 agent 复用）
+                             GET /api/zotero/collections
+                             GET /api/zotero/items?collection_id=
+                             GET /api/zotero/search?q=
+                             GET /api/zotero/items/{item_id}
 
 config.yaml 新增:
   zotero:
     data_dir: /mnt/c/Users/ASUS/Zotero
 ```
+
+依赖：fastapi + uvicorn 已装在 venv（fastapi 0.139.0 / uvicorn 0.51.0），无需新增依赖。
 
 ## 数据模型（zotero.py）
 
@@ -111,6 +118,23 @@ $ python3 main.py --zotero
 - 选中后打印 PDF 路径 → 复用 `interactive_loop(pdf_path)`：首次走 MinerU 解析（1-2 分钟），之后 sha256 缓存秒开；Paper Memory 缓存照常加载
 - 搜索结果显示后保持在同一选择循环，直到输入序号打开或退出
 
+## FastAPI API 层
+
+`paper_reader/server.py`，复用 `load_config` + `ZoteroLibrary`：
+
+| 端点 | 说明 |
+|---|---|
+| `GET /api/zotero/collections` | 收藏夹树（含 item_count） |
+| `GET /api/zotero/items?collection_id=X` | 条目列表；无参数返回全部可读条目 |
+| `GET /api/zotero/search?q=<kw>` | 标题/作者模糊匹配（同 CLI 搜索逻辑） |
+| `GET /api/zotero/items/{item_id}` | 单条目详情（含 pdf_path / has_pdf） |
+
+- 每请求用依赖注入创建 `ZoteroLibrary(data_dir)`（只读连接，用完关闭），避免线程共享问题
+- `data_dir` 读取 config.yaml 的 `zotero.data_dir`，未配置时自动探测
+- 响应序列化 `ZoteroItem` / `ZoteroCollection`（`dataclasses.asdict`）
+- 启动：`uvicorn paper_reader.server:app`（桌面阶段再由 Tauri 自动拉起）
+- **本阶段不含"打开论文"端点**：打开 = 进入对话会话，属桌面阶段（会话管理）。API 只暴露元数据 / 检索 / PDF 路径
+
 ## 配置
 
 ```yaml
@@ -137,10 +161,12 @@ zotero:
   - 元数据拼接（作者顺序、年份解析、fieldMode 单字段作者）
   - 删除条目排除、多收藏夹去重
 - 不依赖真实 Zotero 库，本机与 CI 均可运行
+- API 层：用 fastapi TestClient + fixture sqlite，测 collections / items / search / items/{id} 四个端点
 
 ## 范围外（本阶段明确不做）
 
-- FastAPI / Tauri / React 界面（下阶段：用 FastAPI 包 `zotero.py` 暴露列表/打开 API）
+- Tauri / React 桌面界面（下阶段）
+- "打开论文"的 HTTP 会话端点（对话会话管理，属桌面阶段）
 - 多论文统一索引（跨论文检索）
 - 引用图（Semantic Scholar / PDF 引用列表结构化）
 - Zotero 写操作、笔记/标注读取
