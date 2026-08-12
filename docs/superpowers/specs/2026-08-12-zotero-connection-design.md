@@ -28,7 +28,7 @@
 ```
 main.py --zotero
   └─ zotero_interactive()               # 选论文循环（搜索/收藏夹）
-       └─ ZoteroLibrary.search(items)   # zotero.py 数据层
+       └─ ZoteroLibrary.search(keyword)  # zotero.py 数据层
        └─ ZoteroLibrary.resolve_pdf(item) → 路径
             └─ interactive_loop(路径)    # 复用现有 加载+对话 整条链
 
@@ -105,7 +105,8 @@ $ python3 main.py --zotero
 > ...                         ← 进入现有对话循环
 ```
 
-- 命令：`/collections`（收藏夹树→选收藏夹→列其中论文）、`/search <kw>`（显式搜索）、`/quit`、`/help`
+- 命令：`/collections`（顶层收藏夹编号列出，子收藏夹缩进显示→选收藏夹→列其中论文）、`/search <kw>`（显式搜索）、`/quit`、`/help`
+- 搜索匹配：大小写不敏感的标题 / 作者子串匹配，按标题排序
 - 列表显示：`序号 作者 年份 — 标题 (收藏夹)`，无 PDF 标 `(无 PDF)`
 - 选中后打印 PDF 路径 → 复用 `interactive_loop(pdf_path)`：首次走 MinerU 解析（1-2 分钟），之后 sha256 缓存秒开；Paper Memory 缓存照常加载
 - 搜索结果显示后保持在同一选择循环，直到输入序号打开或退出
