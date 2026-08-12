@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict
 from pathlib import Path
 
 import yaml
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.responses import FileResponse, StreamingResponse
 
+import paper_reader.papers as papers
 from paper_reader.llm import load_config
 from paper_reader.zotero import ZoteroLibrary, resolve_zotero_data_dir
 
@@ -59,6 +62,56 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if it is None:
             raise HTTPException(status_code=404, detail="item not found")
         return item_dict(it)
+
+    @app.post("/api/papers/open")
+    def open_paper(body: dict, lib: ZoteroLibrary = Depends(get_library)):
+        item_id = body.get("zotero_item_id")
+        if item_id is None:
+            raise HTTPException(status_code=400, detail="missing zotero_item_id")
+        item = lib.get_item(item_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="item not found")
+        pdf = lib.resolve_pdf(item)
+        if pdf is None:
+            raise HTTPException(status_code=404, detail="item has no PDF")
+        return papers.open_paper(str(pdf))
+
+    @app.get("/api/papers/{paper_id}/status")
+    def paper_status(paper_id: str):
+        return papers.get_status(paper_id)
+
+    @app.get("/api/papers/{paper_id}/overview")
+    def paper_overview(paper_id: str):
+        try:
+            return papers.get_overview(paper_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="paper not parsed")
+
+    @app.get("/api/papers/{paper_id}/content")
+    def paper_content(paper_id: str):
+        try:
+            return {"markdown": papers.get_content(paper_id)}
+        except KeyError:
+            raise HTTPException(status_code=404, detail="paper not parsed")
+
+    @app.get("/api/papers/{paper_id}/images/{relpath:path}")
+    def paper_image(paper_id: str, relpath: str):
+        p = papers.get_image_path(paper_id, relpath)
+        if p is None:
+            raise HTTPException(status_code=404, detail="image not found")
+        return FileResponse(p)
+
+    @app.post("/api/papers/{paper_id}/chat")
+    def paper_chat(paper_id: str, body: dict):
+        question = (body.get("question") or "").strip()
+        if not question:
+            raise HTTPException(status_code=400, detail="empty question")
+
+        def gen():
+            for etype, payload in papers.chat_events(paper_id, question):
+                yield f"event: {etype}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+        return StreamingResponse(gen(), media_type="text/event-stream")
 
     return app
 
