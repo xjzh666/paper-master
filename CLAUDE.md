@@ -35,7 +35,7 @@ paper_reader/
   ├── context.py         # 对话上下文 + BGE-M3 向量检索 + 窗口构建
   ├── zotero.py           # Zotero 只读数据层（collections/items/search/get_item/resolve_pdf）
   └── server.py           # FastAPI：/api/zotero/* 只读接口
-tests/                   # 170 个测试，全过
+tests/                   # 178 个测试，全过
 config.example.yaml      # 配置模板（提交）
 config.yaml              # 实际配置（gitignore）
 .venv/                   # 虚拟环境（gitignore）
@@ -119,7 +119,8 @@ LLMToolResponse       — LLM 返回解析 {text, tool_calls}
 - [x] **MinerU v1/v2 格式兼容**（content_list.json 平铺格式 + content_list_v2.json 分页嵌套格式）
 - [x] 配置文件：每个模型独立配 api_key、base_url、provider
 - [x] **Paper Memory 结构化理解** — LLM 抽取论文的研究问题、方法、贡献等 10 个字段，独立缓存 `{sha256}-memory.json`，注入对话 system prompt
-- [x] 170 个测试全覆盖（单元 + 集成，含 embedding mock）
+- [x] **PaperAgent 流式改造** — 把 `run()` 方法体重构为 `_run_loop(question, history, memory, on_event, stream)`，新增 `run_stream()` 事件回调入口（事件协议：`answer_chunk`/`clear`/`tool_start`/`tool_result`）；非流式 `run()` 行为不变（调用 `chat_with_tools`）
+- [x] 178 个测试全覆盖（单元 + 集成，含 embedding mock）
 - [x] 中文 README + docs/architecture.md
 - [x] **Zotero 连接（CLI + API）** — `zotero.py` 只读读取 Windows 侧 Zotero sqlite（`/mnt/c/Users/ASUS/Zotero`），解析条目元数据（标题/作者/年份/期刊/DOI/收藏夹）+ 定位 PDF（storage: 路径 → `storage/{attachment_key}/{filename}`）；`main.py --zotero` 搜索/收藏夹选论文进入对话；FastAPI 暴露 collections/items/search/items/{id} 四端点，前端/模型 agent 复用
 
@@ -232,7 +233,7 @@ python3 main.py paper.pdf                     # 单篇阅读
 python3 main.py --batch papers/               # 批量预热
 python3 main.py --zotero                 # 从 Zotero 库选论文阅读
 uvicorn paper_reader.server:app          # FastAPI（Zotero 检索接口）
-python3 -m pytest tests/ -v                   # 测试 (170)
+python3 -m pytest tests/ -v                   # 测试 (178)
 GIT_SSL_NO_VERIFY=true git push               # 推送
 ```
 

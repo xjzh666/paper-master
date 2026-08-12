@@ -350,6 +350,17 @@ class PaperAgent:
 
     def run(self, question: str, history: list[dict] | None = None,
             memory: PaperMemory | None = None) -> str:
+        return self._run_loop(question, history, memory, None, False)
+
+    def run_stream(self, question: str, history: list[dict] | None = None,
+                   memory: PaperMemory | None = None,
+                   on_event: Callable[[str, dict], None] | None = None) -> str:
+        return self._run_loop(question, history, memory, on_event, True)
+
+    def _run_loop(self, question: str, history: list[dict] | None = None,
+                  memory: PaperMemory | None = None,
+                  on_event: Callable[[str, dict], None] | None = None,
+                  stream: bool = False) -> str:
         system = SYSTEM_PROMPT
         if memory is not None:
             system = system + "\n\n" + _format_memory(memory)
@@ -374,9 +385,24 @@ class PaperAgent:
             # 发送前压缩往轮 tool result
             compacted_messages = self._compact_messages(messages, round_num)
 
-            response = self._text_client.chat_with_tools(
-                compacted_messages, tool_schemas, system_prompt=system,
-            )
+            text_parts: list[str] = []
+            tool_calls: list[dict] = []
+            if stream:
+                for evt, payload in self._text_client.chat_with_tools_stream(
+                        compacted_messages, tool_schemas, system_prompt=system):
+                    if evt == "text_delta":
+                        text_parts.append(payload)
+                        if on_event is not None:
+                            on_event("answer_chunk", {"delta": payload})
+                    elif evt == "tool_calls":
+                        tool_calls = payload
+                response = LLMToolResponse(
+                    text="".join(text_parts) if not tool_calls else None,
+                    tool_calls=tool_calls,
+                )
+            else:
+                response = self._text_client.chat_with_tools(
+                    compacted_messages, tool_schemas, system_prompt=system)
 
             if response.text and not response.tool_calls:
                 return response.text
@@ -401,10 +427,17 @@ class PaperAgent:
                 "tool_calls": openai_tool_calls,
             })
 
+            # tool-calling round: discard speculative text that was streamed live
+            if stream and on_event is not None and text_parts:
+                on_event("clear", {})
+
             # Execute each tool call
             for tc in response.tool_calls:
                 name = tc["name"]
                 raw_args = tc["arguments"]
+
+                if on_event is not None:
+                    on_event("tool_start", {"name": name, "arguments": raw_args})
 
                 try:
                     args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
@@ -422,6 +455,10 @@ class PaperAgent:
 
                 print(f"  [agent] {name}({str(raw_args)[:60]}{'...' if len(str(raw_args)) > 60 else ''})"
                       f" → {len(result.text)} chars, {len(result.resources)} resources")
+                if on_event is not None:
+                    on_event("tool_result", {"name": name,
+                                             "chars": len(result.text),
+                                             "resources": len(result.resources)})
 
                 messages.append({
                     "role": "tool",

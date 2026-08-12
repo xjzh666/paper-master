@@ -1,0 +1,85 @@
+from paper_reader.agent import PaperAgent, LLMToolResponse
+from tests.test_agent import FakeCtx, FakeVisionClient, FakeTextClient
+
+
+class FakeStreamTextClient:
+    """Fake LLM client exposing chat_with_tools_stream for agent streaming tests."""
+    def __init__(self, streams=None):
+        self.calls = []
+        self._streams = streams or []
+        self._idx = 0
+
+    def chat_with_tools_stream(self, messages, tools, system_prompt=""):
+        self.calls.append({"messages": list(messages), "tools": tools,
+                           "system_prompt": system_prompt})
+        if self._idx < len(self._streams):
+            evs = self._streams[self._idx]
+            self._idx += 1
+        else:
+            evs = [("text_delta", "fallback"), ("tool_calls", [])]
+        yield from evs
+
+
+def test_run_stream_emits_tool_and_answer_events():
+    ctx = FakeCtx()
+    text_client = FakeStreamTextClient(streams=[
+        [("text_delta", "让我查一下"),
+         ("tool_calls", [{"id": "call_1", "name": "search_paper",
+                          "arguments": '{"query":"x"}'}])],
+        [("text_delta", "核心思想"),
+         ("text_delta", "是注意力机制"),
+         ("tool_calls", [])],
+    ])
+    agent = PaperAgent(text_client=text_client,
+                       vision_client=FakeVisionClient(), ctx=ctx)
+    events: list[tuple[str, dict]] = []
+    answer = agent.run_stream(question="Q", history=[],
+                              on_event=lambda t, p: events.append((t, p)))
+    assert answer == "核心思想是注意力机制"
+    types = [e[0] for e in events]
+    assert types == ["answer_chunk", "clear", "tool_start", "tool_result",
+                     "answer_chunk", "answer_chunk"]
+    assert len(text_client.calls) == 2
+
+
+def test_run_stream_no_tools_no_clear():
+    ctx = FakeCtx()
+    text_client = FakeStreamTextClient(streams=[
+        [("text_delta", "直接回答"), ("tool_calls", [])],
+    ])
+    agent = PaperAgent(text_client=text_client,
+                       vision_client=FakeVisionClient(), ctx=ctx)
+    events: list[tuple[str, dict]] = []
+    answer = agent.run_stream(question="Q", history=[],
+                              on_event=lambda t, p: events.append((t, p)))
+    assert answer == "直接回答"
+    assert [e[0] for e in events] == ["answer_chunk"]
+
+
+def test_run_stream_pure_tool_round_emits_no_clear():
+    """Tool round with no text emits no answer_chunk/clear."""
+    ctx = FakeCtx()
+    text_client = FakeStreamTextClient(streams=[
+        [("tool_calls", [{"id": "c1", "name": "search_paper",
+                          "arguments": '{"query":"x"}'}])],
+        [("text_delta", "结果"), ("tool_calls", [])],
+    ])
+    agent = PaperAgent(text_client=text_client,
+                       vision_client=FakeVisionClient(), ctx=ctx)
+    events: list[tuple[str, dict]] = []
+    answer = agent.run_stream(question="Q", history=[],
+                              on_event=lambda t, p: events.append((t, p)))
+    assert answer == "结果"
+    types = [e[0] for e in events]
+    assert types == ["tool_start", "tool_result", "answer_chunk"]
+    assert "clear" not in types
+
+
+def test_run_still_works_non_stream():
+    ctx = FakeCtx()
+    text_client = FakeTextClient(responses=[LLMToolResponse(text="fallback")])
+    agent = PaperAgent(text_client=text_client,
+                       vision_client=FakeVisionClient(), ctx=ctx)
+    answer = agent.run(question="Q", history=[])
+    assert answer == "fallback"
+    assert len(text_client.calls) == 1  # non-streaming chat_with_tools used
