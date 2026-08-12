@@ -76,3 +76,45 @@ def test_items_by_collection(zotero_db):
         lib.close()
     assert in_seminar == ["Agentic AI Threats"]
     assert empty == []
+
+
+def test_resolve_pdf_stored(zotero_db):
+    lib = ZoteroLibrary(zotero_db)
+    try:
+        it = next(i for i in lib.items() if i.title == "Honeypot Evolution")
+    finally:
+        lib.close()
+    assert it.has_pdf is True
+    assert it.pdf_path == zotero_db / "storage" / "ATT11" / "Honeypot Evolution.pdf"
+
+
+def test_resolve_pdf_linked_file(zotero_db):
+    lib = ZoteroLibrary(zotero_db)
+    try:
+        it = next(i for i in lib.items() if i.title == "Retrieval for Science")
+    finally:
+        lib.close()
+    assert it.has_pdf is True
+    assert it.pdf_path is not None and it.pdf_path.is_absolute()
+    assert it.pdf_path.name == "linked.pdf"
+
+
+def test_resolve_pdf_missing_file(zotero_db):
+    lib = ZoteroLibrary(zotero_db)
+    try:
+        it = next(i for i in lib.items() if i.title == "Ghost Paper")
+    finally:
+        lib.close()
+    assert it.has_pdf is False
+    assert it.pdf_path is None
+
+
+def test_item_without_pdf(zotero_db):
+    lib = ZoteroLibrary(zotero_db)
+    try:
+        it = next(i for i in lib.items() if i.title == "Agentic AI Threats")
+    finally:
+        lib.close()
+    assert it.has_pdf is False
+    assert it.pdf_path is None
+    assert lib.resolve_pdf(it) is None

@@ -125,9 +125,18 @@ class ZoteroLibrary:
               AND c.collectionID NOT IN (SELECT collectionID FROM deletedCollections)
         """, ids):
             colls.setdefault(r["itemID"], []).append(r["collectionName"])
+        atts: dict[int, tuple[str, str]] = {}
+        for r in self._conn.execute(f"""
+            SELECT a.parentItemID, a.path, i.key AS attach_key
+            FROM itemAttachments a
+            JOIN items i ON a.itemID = i.itemID
+            WHERE a.parentItemID IN ({ph}) AND a.contentType = 'application/pdf'
+        """, ids):
+            atts[r["parentItemID"]] = (r["path"], r["attach_key"])
         items = []
         for r in rows:
             m = meta.get(r["itemID"], {})
+            pdf_path = self._resolve_pdf_path(atts.get(r["itemID"]))
             items.append(ZoteroItem(
                 item_id=r["itemID"],
                 key=r["key"],
@@ -138,5 +147,22 @@ class ZoteroLibrary:
                 publication=m.get("publicationTitle") or None,
                 doi=m.get("DOI") or None,
                 collections=colls.get(r["itemID"], []),
+                has_pdf=pdf_path is not None,
+                pdf_path=pdf_path,
             ))
         return items
+
+    def _resolve_pdf_path(self, att):
+        if att is None:
+            return None
+        path, attach_key = att
+        if path.startswith("storage:"):
+            full = self.data_dir / "storage" / attach_key / path[len("storage:"):]
+        else:
+            full = Path(path)
+        if full.exists() and full.is_file():
+            return full
+        return None
+
+    def resolve_pdf(self, item: ZoteroItem) -> Path | None:
+        return item.pdf_path
