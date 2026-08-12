@@ -35,11 +35,13 @@ paper_reader/
   ├── context.py         # 对话上下文 + BGE-M3 向量检索 + 窗口构建
   ├── zotero.py          # Zotero 只读数据层（collections/items/search/get_item/resolve_pdf）
   ├── papers.py          # Web 会话仓库：Session 管理 + 异步 MinerU 解析 + chat_events SSE 事件源
+  ├── latex_fix.py       # OCR 公式 LaTeX 规范化（HTML标签→上下标、字母间距、上下标嵌套、\dots、\operatorname），get_content 时应用
   └── server.py          # FastAPI：/api/zotero/* + /api/papers/* 接口 + 前端静态托管（mount("/")）
 frontend/                # Web 前端（React + TypeScript + Ant Design + Vite）
   ├── src/               # App 三栏：论文列表 / markdown 阅读区 / SSE 对话区 + api client
+  │                      # 阅读区：react-markdown + remark-math/rehype-katex（公式）+ rehype-raw（HTML 表格/sub/sup）+ github-markdown-css
   └── dist/              # 构建产物（npm run build 输出，server.py 静态托管）
-tests/                   # 190 个测试，全过
+tests/                   # 202 个测试，全过
 config.example.yaml      # 配置模板（提交）
 config.yaml              # 实际配置（gitignore）
 .venv/                   # 虚拟环境（gitignore）
