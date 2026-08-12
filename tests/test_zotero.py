@@ -165,3 +165,29 @@ def test_get_item(zotero_db):
         lib.close()
     assert it is not None and it.title == "Honeypot Evolution"
     assert missing is None
+
+
+from paper_reader.zotero import resolve_zotero_data_dir
+
+
+def test_resolve_from_config(zotero_db):
+    assert resolve_zotero_data_dir({"zotero": {"data_dir": str(zotero_db)}}) == zotero_db
+
+
+def test_resolve_autodetect(monkeypatch, tmp_path):
+    (tmp_path / "Zotero").mkdir()
+    (tmp_path / "Zotero" / "zotero.sqlite").write_text("x")
+    monkeypatch.setattr("paper_reader.zotero._autodetect_candidates",
+                        lambda: [tmp_path / "Zotero"])
+    assert resolve_zotero_data_dir({}) == tmp_path / "Zotero"
+
+
+def test_resolve_missing_raises(monkeypatch, tmp_path):
+    monkeypatch.setattr("paper_reader.zotero._autodetect_candidates",
+                        lambda: [tmp_path / "nope"])
+    try:
+        resolve_zotero_data_dir({"zotero": {"data_dir": ""}})
+    except FileNotFoundError as e:
+        assert "zotero.data_dir" in str(e)
+    else:
+        raise AssertionError("expected FileNotFoundError")

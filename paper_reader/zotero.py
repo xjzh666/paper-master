@@ -189,3 +189,23 @@ class ZoteroLibrary:
 
     def resolve_pdf(self, item: ZoteroItem) -> Path | None:
         return item.pdf_path
+
+
+def _autodetect_candidates() -> list[Path]:
+    candidates = [Path.home() / "Zotero"]
+    candidates += sorted(Path("/mnt/c/Users").glob("*/Zotero"), key=str)
+    return candidates
+
+
+def resolve_zotero_data_dir(config: dict | None = None) -> Path:
+    configured = (config or {}).get("zotero", {}).get("data_dir")
+    if configured:
+        p = Path(configured)
+        if (p / "zotero.sqlite").exists():
+            return p
+    for p in _autodetect_candidates():
+        if (p / "zotero.sqlite").exists():
+            return p
+    raise FileNotFoundError(
+        "未找到 Zotero 数据库，请在 config.yaml 配置 zotero.data_dir"
+    )
