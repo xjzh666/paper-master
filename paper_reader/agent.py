@@ -123,12 +123,12 @@ def _make_tools(ctx, vision_client, resources_store: dict, observations_store: l
         # Exact alias match for figure/table references (Fig. 2, Table 1, 图3, etc.)
         alias_chunks = _match_figure_alias(ctx.paper.chunks, query)
         if alias_chunks:
-            text, image_blocks = ctx.build_context(alias_chunks, window=1)
+            text, image_blocks = ctx.build_context(alias_chunks, window=0)
         else:
             chunks = ctx.search_chunks(query, top_k=3)
             if not chunks:
                 return ToolResult(text="[检索结果为空]")
-            text, image_blocks = ctx.build_context(chunks, window=1)
+            text, image_blocks = ctx.build_context(chunks, window=0)
         resources = []
         for i, img in enumerate(image_blocks):
             if img.image_path:
@@ -199,14 +199,15 @@ def _make_tools(ctx, vision_client, resources_store: dict, observations_store: l
         Tool(
             name="search_paper",
             description=(
-                "在当前论文中语义检索相关段落。适合开放性问题，如'核心思想是什么'、'怎么解决XX问题'。"
-                "返回相关文本片段。结果可能包含图片/表格资源引用（resources 字段），"
-                "涉及图表内容时需调用 describe_image 解析。"
+                "Search the current paper for semantically relevant passages. Use for open-ended "
+                "questions such as 'what is the core idea' or 'how does the method solve X'. "
+                "Returns text snippets from relevant chunks. May include figure/table resource "
+                "references (resources field) — if so, call describe_image to analyze their content."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "中文或英文检索查询"},
+                    "query": {"type": "string", "description": "Search query in English (paper content is in English)"},
                 },
                 "required": ["query"],
             },
@@ -215,15 +216,15 @@ def _make_tools(ctx, vision_client, resources_store: dict, observations_store: l
         Tool(
             name="get_section",
             description=(
-                "按章节编号或标题关键词精确获取章节完整内容。"
-                "适合'第3.2节讲了什么'、'实验结果是什么'这类精确引用问题。"
-                "结果可能包含图片/表格资源引用（resources 字段），"
-                "涉及图表内容时需调用 describe_image 解析。"
+                "Retrieve the full content of a specific section by section number or heading keyword. "
+                "Use for precise-reference questions such as 'what does section 3.2 cover' or "
+                "'what are the experimental results'. May include figure/table resource references "
+                "(resources field) — if so, call describe_image to analyze their content."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "reference": {"type": "string", "description": "章节编号如'3.2'或标题关键词如'Experiments'"},
+                    "reference": {"type": "string", "description": "Section number like '3.2' or heading keyword like 'Experiments'"},
                 },
                 "required": ["reference"],
             },
@@ -232,13 +233,14 @@ def _make_tools(ctx, vision_client, resources_store: dict, observations_store: l
         Tool(
             name="describe_image",
             description=(
-                "解析图片/表格内容。传入前一步 ToolResult 中 resources 列表里的 resource id，"
-                "返回图片的详细文字描述。仅当用户问题涉及图表内容时才调用。"
+                "Analyze the content of an image or table. Pass the resource id from the resources "
+                "field of a previous ToolResult. Returns a detailed textual description of the image. "
+                "Only call this when the user's question involves figure or table content."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "resource_id": {"type": "string", "description": "ToolResult resources 中的 id 字段"},
+                    "resource_id": {"type": "string", "description": "The id field from a ToolResult's resources list"},
                 },
                 "required": ["resource_id"],
             },
@@ -247,30 +249,31 @@ def _make_tools(ctx, vision_client, resources_store: dict, observations_store: l
         Tool(
             name="record_observation",
             description=(
-                "记录本轮检索的关键发现（结构化观察）。"
-                "在看完 search_paper 或 get_section 的返回结果后调用，"
-                "总结本轮学到的关键信息。summary 为一段话总结，"
-                "facts 为关键事实列表，entities 为涉及的关键概念/方法/指标，"
-                "sources 为信息来源（如 ['p3 §2.1']）。"
+                "Record the key findings of the current retrieval round as a structured observation. "
+                "Call this AFTER reviewing the results returned by search_paper or get_section to "
+                "summarize what you learned this round — this preserves knowledge across rounds and "
+                "keeps the conversation context compact. summary is a one-sentence summary of the "
+                "findings; facts is a list of key facts; entities is a list of key concepts/methods/"
+                "metrics; sources is provenance like ['p3 §2.1']."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "summary": {"type": "string", "description": "本轮检索发现的关键信息总结"},
+                    "summary": {"type": "string", "description": "One-sentence summary of the key findings from this round"},
                     "facts": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "关键事实列表",
+                        "description": "List of key facts learned this round",
                     },
                     "entities": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "涉及的关键概念、方法、指标等实体",
+                        "description": "Key concepts, methods, or metrics involved",
                     },
                     "sources": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "信息来源标注，如 ['p3 §2.1', 'p5 §4.2']",
+                        "description": "Provenance annotations, e.g. ['p3 §2.1', 'p5 §4.2']",
                     },
                 },
                 "required": ["summary"],
@@ -280,12 +283,16 @@ def _make_tools(ctx, vision_client, resources_store: dict, observations_store: l
     ]
 
 
-SYSTEM_PROMPT = """你是一个论文阅读助手。你根据提供的论文内容帮助用户理解学术论文，用中文回答问题。
+KEEP_RECENT_ROUNDS = 3  # 压缩时保留最近几轮 tool result 完整
+
+
+SYSTEM_PROMPT = """你是一个论文阅读助手。你根据提供的论文内容帮助用户理解学术论文。
 
 准则:
 - 仅根据提供的论文内容作答
 - 回答准确、简洁
-- 用中文回复
+- 最终回答用中文
+- 工具调用参数（检索查询、章节引用、观察记录）一律用英文，因为论文内容是英文
 - 如果提供的内容不足以回答问题，请明确说明
 - 讨论图表时，描述其展示的内容
 - 引用章节标题来为回答提供上下文
@@ -313,15 +320,15 @@ class PaperAgent:
     def _compact_messages(self, messages: list[dict], current_round: int) -> list[dict]:
         """替换往轮 tool result 为 observation 摘要或截断。
 
-        最新一轮 (current_round) 的 tool result 保留完整，
-        往轮的替换为对应 observation 摘要，无 observation 则截断降级。
+        保留最近 KEEP_RECENT_ROUNDS 轮完整（含刚执行完的那轮，模型能回读证据），
+        更早的往轮替换为对应 observation 摘要，无 observation 则截断降级。
         """
         compacted: list[dict] = []
         for msg in messages:
             if msg["role"] == "tool":
                 tc_id = msg.get("tool_call_id", "")
                 round_num = self._tool_round_map.get(tc_id)
-                if round_num is not None and round_num < current_round:
+                if round_num is not None and round_num < current_round - KEEP_RECENT_ROUNDS:
                     # 观察记录在 round R+1 总结 round R 的结果
                     matching = [o for o in self._observations if o.round_num == round_num + 1]
                     obs = matching[0] if matching else None

@@ -627,54 +627,53 @@ def test_record_observation_is_in_tool_list():
 # ── _compact_messages tests ────────────────────────────────────────────
 
 
-def test_compact_messages_preserves_latest_round():
-    """最新一轮 tool result 保持完整。"""
-    from paper_reader.agent import PaperAgent, Observation
+def test_compact_messages_preserves_recent_three_rounds():
+    """最近 3 轮 tool result 保持完整，更早的压缩。"""
+    from paper_reader.agent import PaperAgent
     ctx = FakeCtx()
     agent = PaperAgent(text_client=FakeTextClient(), vision_client=FakeVisionClient(), ctx=ctx)
-    agent._tool_round_map["call_1"] = 0
-    agent._tool_round_map["call_2"] = 1
-    agent._observations = [Observation(summary="第0轮观察")]
+    for i in range(5):
+        agent._tool_round_map[f"call_{i}"] = i
 
+    long_old = "A" * 500
     messages = [
-        {"role": "user", "content": "问题"},
-        {"role": "assistant", "content": None, "tool_calls": [
-            {"id": "call_1", "type": "function", "function": {"name": "search_paper", "arguments": "{}"}}
-        ]},
-        {"role": "tool", "tool_call_id": "call_1", "content": "第0轮结果，很多文字"},
-        {"role": "assistant", "content": None, "tool_calls": [
-            {"id": "call_2", "type": "function", "function": {"name": "get_section", "arguments": "{}"}}
-        ]},
-        {"role": "tool", "tool_call_id": "call_2", "content": "第1轮结果，最新内容"},
+        {"role": "tool", "tool_call_id": "call_0", "content": long_old},
+        {"role": "tool", "tool_call_id": "call_1", "content": long_old},
+        {"role": "tool", "tool_call_id": "call_2", "content": "结果2"},
+        {"role": "tool", "tool_call_id": "call_3", "content": "结果3"},
+        {"role": "tool", "tool_call_id": "call_4", "content": "结果4"},
     ]
 
-    compacted = agent._compact_messages(messages, current_round=1)
+    compacted = agent._compact_messages(messages, current_round=5)
 
-    # 第1轮 tool result 保持完整
     tool_msgs = [m for m in compacted if m["role"] == "tool"]
-    assert len(tool_msgs) == 2
-    assert tool_msgs[1]["content"] == "第1轮结果，最新内容"
+    assert "已截断" in tool_msgs[0]["content"]  # round 0 压缩
+    assert "已截断" in tool_msgs[1]["content"]  # round 1 压缩
+    assert tool_msgs[2]["content"] == "结果2"   # round 2 完整保留
+    assert tool_msgs[3]["content"] == "结果3"   # round 3 完整保留
+    assert tool_msgs[4]["content"] == "结果4"   # round 4 完整保留
 
 
 def test_compact_messages_replaces_old_round_with_observation():
-    """往轮 tool result 被 observation 摘要替换。"""
+    """更早的往轮 tool result 被 observation 摘要替换。"""
     from paper_reader.agent import PaperAgent, Observation
     ctx = FakeCtx()
     agent = PaperAgent(text_client=FakeTextClient(), vision_client=FakeVisionClient(), ctx=ctx)
-    agent._tool_round_map["call_1"] = 0
-    agent._tool_round_map["call_2"] = 1
+    agent._tool_round_map["call_0"] = 0
+    agent._tool_round_map["call_4"] = 4
     agent._observations = [Observation(summary="注意力机制的核心是 QKV", round_num=1)]
 
     messages = [
-        {"role": "tool", "tool_call_id": "call_1", "content": "很长的旧结果"},
-        {"role": "tool", "tool_call_id": "call_2", "content": "新结果"},
+        {"role": "tool", "tool_call_id": "call_0", "content": "很长的旧结果"},
+        {"role": "tool", "tool_call_id": "call_4", "content": "最新结果"},
     ]
 
-    compacted = agent._compact_messages(messages, current_round=1)
+    compacted = agent._compact_messages(messages, current_round=5)
 
-    assert "已记录观察" in compacted[0]["content"]
-    assert "注意力机制的核心是 QKV" in compacted[0]["content"]
-    assert compacted[1]["content"] == "新结果"
+    tool_msgs = [m for m in compacted if m["role"] == "tool"]
+    assert "已记录观察" in tool_msgs[0]["content"]  # round 0 → observation
+    assert "注意力机制的核心是 QKV" in tool_msgs[0]["content"]
+    assert tool_msgs[1]["content"] == "最新结果"     # round 4 完整保留
 
 
 def test_compact_messages_fallback_truncate_when_no_observation():
@@ -682,20 +681,21 @@ def test_compact_messages_fallback_truncate_when_no_observation():
     from paper_reader.agent import PaperAgent
     ctx = FakeCtx()
     agent = PaperAgent(text_client=FakeTextClient(), vision_client=FakeVisionClient(), ctx=ctx)
-    agent._tool_round_map["call_1"] = 0
-    agent._tool_round_map["call_2"] = 1
+    agent._tool_round_map["call_0"] = 0
+    agent._tool_round_map["call_4"] = 4
 
     old_text = "A" * 500
     messages = [
-        {"role": "tool", "tool_call_id": "call_1", "content": old_text},
-        {"role": "tool", "tool_call_id": "call_2", "content": "新结果"},
+        {"role": "tool", "tool_call_id": "call_0", "content": old_text},
+        {"role": "tool", "tool_call_id": "call_4", "content": "新结果"},
     ]
 
-    compacted = agent._compact_messages(messages, current_round=1)
+    compacted = agent._compact_messages(messages, current_round=5)
 
-    assert "已截断" in compacted[0]["content"]
-    assert len(compacted[0]["content"]) < len(old_text)
-    assert compacted[1]["content"] == "新结果"
+    tool_msgs = [m for m in compacted if m["role"] == "tool"]
+    assert "已截断" in tool_msgs[0]["content"]  # round 0 截断
+    assert len(tool_msgs[0]["content"]) < len(old_text)
+    assert tool_msgs[1]["content"] == "新结果"   # round 4 完整保留
 
 
 def test_compact_messages_round_zero_all_preserved():
@@ -762,7 +762,18 @@ def test_agent_passes_compacted_messages_to_llm():
                 "arguments": '{"query":"experiment"}',
             },
         ]),
-        # 第 2 轮：回答
+        # 第 2-3 轮：继续搜（凑够轮次，触发保留最近 3 轮后的压缩）
+        LLMToolResponse(tool_calls=[{
+            "id": "call_4",
+            "name": "search_paper",
+            "arguments": '{"query":"result"}',
+        }]),
+        LLMToolResponse(tool_calls=[{
+            "id": "call_5",
+            "name": "search_paper",
+            "arguments": '{"query":"analysis"}',
+        }]),
+        # 第 4 轮：回答
         LLMToolResponse(text="根据检索，方法使用了梯度下降..."),
     ])
     agent = PaperAgent(text_client=text_client, vision_client=FakeVisionClient(), ctx=ctx)
@@ -770,11 +781,11 @@ def test_agent_passes_compacted_messages_to_llm():
     answer = agent.run(question="这篇论文的方法是什么？", history=[])
 
     assert "梯度下降" in answer
-    assert len(text_client.calls) == 3
+    assert len(text_client.calls) == 5
 
-    # 第 3 轮发送时（call index=2），第 0 轮结果已被 observation 替换
-    third_call_messages = text_client.calls[2]["messages"]
-    tool_msgs = [m for m in third_call_messages if m["role"] == "tool"]
+    # 第 5 轮发送时（call index=4），第 0 轮结果已被 observation 替换
+    fifth_call_messages = text_client.calls[4]["messages"]
+    tool_msgs = [m for m in fifth_call_messages if m["role"] == "tool"]
     # 第 0 轮的 search_paper 结果应已被 observation 替换（不含 # 编号）
     obs_replacements = [m for m in tool_msgs if m["content"].startswith("[已记录观察] ")]
     assert len(obs_replacements) == 1

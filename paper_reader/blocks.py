@@ -332,7 +332,7 @@ def merge_blocks(blocks: list[ContentBlock]) -> list[SemanticChunk]:
                 current_aliases.extend(aliases)
         else:
             combined = "\n".join(current_text_parts)
-            if estimate_tokens(combined) + estimate_tokens(block.text) > 480:
+            if estimate_tokens(combined) + estimate_tokens(block.text) > 240:
                 prev_text = combined
                 flush()
                 overlap = take_last_tokens(prev_text, 64)
