@@ -75,6 +75,21 @@ def test_run_stream_pure_tool_round_emits_no_clear():
     assert "clear" not in types
 
 
+def test_run_stream_cap_emits_fallback_answer_chunk():
+    ctx = FakeCtx()
+    streams = [[("tool_calls", [{"id": f"c{i}", "name": "search_paper",
+                                 "arguments": '{"query":"x"}'}])] for i in range(8)]
+    text_client = FakeStreamTextClient(streams=streams)
+    agent = PaperAgent(text_client=text_client,
+                       vision_client=FakeVisionClient(), ctx=ctx)
+    events: list[tuple[str, dict]] = []
+    answer = agent.run_stream(question="Q", history=[],
+                              on_event=lambda t, p: events.append((t, p)))
+    assert answer == "抱歉，暂时没能找到相关信息，请尝试换一个问法。"
+    chunks = [p["delta"] for t, p in events if t == "answer_chunk"]
+    assert any("抱歉" in c for c in chunks)
+
+
 def test_run_still_works_non_stream():
     ctx = FakeCtx()
     text_client = FakeTextClient(responses=[LLMToolResponse(text="fallback")])

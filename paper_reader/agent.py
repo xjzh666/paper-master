@@ -471,4 +471,6 @@ class PaperAgent:
                 if name == "record_observation" and self._observations:
                     self._observations[-1].round_num = round_num
 
+        if stream and on_event is not None:
+            on_event("answer_chunk", {"delta": "抱歉，暂时没能找到相关信息，请尝试换一个问法。"})
         return "抱歉，暂时没能找到相关信息，请尝试换一个问法。"

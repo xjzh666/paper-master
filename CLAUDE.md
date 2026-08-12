@@ -91,9 +91,9 @@ PDF → MinerU CLI (VLM 版面分析) → content_list_v2.json + images/ + .md
 
 | event | payload | 说明 |
 |-------|---------|------|
-| `tool_start` | `{name}` | Agent 开始调用工具 |
+| `tool_start` | `{name, arguments}` | Agent 开始调用工具 |
 | `tool_result` | `{name, chars, resources}` | 工具返回摘要（正文在服务端已压缩） |
-| `answer_chunk` | `{text}` | 流式答案片段（增量追加） |
+| `answer_chunk` | `{delta}` | 流式答案片段（增量追加） |
 | `clear` | `{}` | 清空面板（新一轮回答开始前） |
 | `done` | `{}` | 本轮结束 |
 | `error` | `{message}` | 出错（如 paper not parsed） |
@@ -232,7 +232,7 @@ LLMToolResponse       — LLM 返回解析 {text, tool_calls}
 
 ### P5：暂缓
 
-以下功能暂缓，等桌面应用稳定后再评估：
+以下功能暂缓，等 Web 应用稳定后再评估：
 - [ ] 上网搜论文（文献搜索）——**明确暂不做**
 - [ ] 多轮对话 query rewriting（代词和省略会降低检索精度）
 - [ ] 检索语义 section 过滤（"找实验结果"而非"找相似文本"）
