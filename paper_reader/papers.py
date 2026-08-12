@@ -110,6 +110,10 @@ def get_content(paper_id: str) -> str:
         return ""
     text = md_files[0].read_text(encoding="utf-8", errors="replace")
 
+    # Normalize OCR'd LaTeX in math blocks so KaTeX renders correctly.
+    from paper_reader.latex_fix import fix_markdown_math
+    text = fix_markdown_math(text)
+
     def _rewrite(m: re.Match) -> str:
         rel = m.group(2)
         quoted = urllib.parse.quote(rel.lstrip("/"))
