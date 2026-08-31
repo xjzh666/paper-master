@@ -20,10 +20,30 @@ import re
 # Split markdown into display math ($$..$$), inline math ($..$), and prose.
 _MATH_SPLIT = re.compile(r"(\$\$.*?\$\$|\$[^$\n]*?\$)", re.DOTALL)
 
-# Commands whose argument is a single upright token.
+# Commands whose argument is a single upright token (letter-spacing collapsed).
+# Includes font-switching commands that keep math mode (spaces are ignored in
+# math mode, but collapsing them makes the source canonical and readable).
 _UPRIGHT_CMDS = frozenset({
     "mathrm", "mathbf", "mathsf", "mathtt", "text", "operatorname",
+    "mathbb", "mathcal", "boldsymbol",
 })
+
+# Known multi-letter identifiers / protocol fields / key names that should be
+# rendered upright (\\mathrm{...}) rather than as a product of italic variables.
+_IDENTIFIER_TOKENS = frozenset({
+    "PK", "SK", "OTK", "SOTK", "Cert", "cert", "aid", "uid", "name",
+    "device", "IP", "port", "MAC", "KDF", "DH", "PRF", "PRG", "IV",
+})
+
+# Bare identifier token (standalone). ``\\`` and alphanumerics are excluded as
+# boundaries; ``{``/``_``/``^`` are *allowed* so sub/superscript groups and
+# bare subscript braces are wrapped too (font-command args are protected first).
+_IDENT_ALT = "|".join(sorted(_IDENTIFIER_TOKENS, key=len, reverse=True))
+_BARE_IDENT = re.compile(rf"(?<![A-Za-z0-9\\])({_IDENT_ALT})(?![A-Za-z0-9])")
+
+# A bare leading letter glued onto a following \\mathrm{...} (OCR split an
+# identifier across the command boundary): ``S \\mathrm{K}`` -> ``\\mathrm{SK}``.
+_MERGE_SPLIT = re.compile(r"(?<![A-Za-z0-9\\])([A-Za-z])\s*\\mathrm\s*\{([^{}]*)\}")
 
 # Known crypto-operation names (multi-letter). Converted to \operatorname even
 # when the ``(`` call is not immediately visible (e.g. split across \left).
@@ -191,6 +211,67 @@ def _to_operatorname(s: str) -> str:
     return "".join(out)
 
 
+def _merge_split_identifiers(s: str) -> str:
+    """Merge a bare letter glued to a following ``\\mathrm{...}`` when the
+    concatenation is a known identifier: ``S \\mathrm{K}`` -> ``\\mathrm{SK}``.
+
+    MinerU sometimes splits a single upright identifier across the command
+    boundary (``S \\mathrm { K }`` for "SK"). Run this *before*
+    ``_to_operatorname`` so a merged token can still be recognized as a
+    function name afterwards.
+    """
+    def _merge(m: re.Match) -> str:
+        lead = m.group(1)
+        body = m.group(2).strip().replace(" ", "")
+        joined = lead + body
+        if joined in _IDENTIFIER_TOKENS or joined in _KNOWN_FUNCS:
+            return f"\\mathrm{{{joined}}}"
+        return m.group(0)
+    return _MERGE_SPLIT.sub(_merge, s)
+
+
+def _wrap_bare_identifiers(s: str) -> str:
+    """Wrap standalone multi-letter identifiers in ``\\mathrm{...}``.
+
+    Only tokens in the explicit ``_IDENTIFIER_TOKENS`` whitelist are touched,
+    and only when they are not already inside a font command's argument. This
+    changes typesetting (italic -> upright) without changing meaning.
+
+    Existing ``\\command{...}`` arguments are protected (placeholder-swapped)
+    first so their contents are never double-wrapped, while identifiers inside
+    ordinary ``_{...}``/``^{...}`` groups are still wrapped.
+    """
+    protected: dict[str, str] = {}
+
+    # Protect every ``\cmd{...}`` argument (brace-matched, any nesting).
+    out: list[str] = []
+    i, n = 0, len(s)
+    while i < n:
+        if s[i] == "\\" and i + 1 < n and s[i + 1].isalpha():
+            j = i + 1
+            while j < n and s[j].isalpha():
+                j += 1
+            k = j
+            while k < n and s[k].isspace():
+                k += 1
+            if k < n and s[k] == "{":
+                end = _match_brace(s, k)
+                key = f"\x00{len(protected)}\x00"
+                protected[key] = s[i:end]
+                out.append(key)
+                i = end
+                continue
+        out.append(s[i])
+        i += 1
+    s = "".join(out)
+
+    s = _BARE_IDENT.sub(lambda m: f"\\mathrm{{{m.group(1)}}}", s)
+
+    for key, val in protected.items():
+        s = s.replace(key, val)
+    return s
+
+
 def _clean_spacing(s: str) -> str:
     """Remove OCR whitespace around sub/sup and structural braces."""
     protected: dict[str, str] = {}
@@ -205,7 +286,10 @@ def _clean_spacing(s: str) -> str:
     s = re.sub(r"\\\s", _protect, s)
     s = re.sub(r"\s+([_^])", r"\1", s)
     s = re.sub(r"\s*,", r",", s)
-    s = re.sub(r"\s*([{}()])\s*", lambda b: b.group(1), s)
+    # Collapse OCR spacing around braces/parens, but never newlines:
+    # a display-math block ending ``content}\n$$`` must keep the ``\n``
+    # before the closing ``$$`` or remark-math won't see it as a close.
+    s = re.sub(r"[ \t]*([{}()])[ \t]*", lambda b: b.group(1), s)
     for key, val in protected.items():
         s = s.replace(key, val)
     return s
@@ -230,20 +314,26 @@ def fix_latex_math(block: str) -> str:
     # 2. Collapse letter-spaced upright tokens (any nesting depth).
     inner = _fix_upright_args(inner)
 
-    # 3. Fix superscripts nested inside subscripts.
+    # 3. Re-join identifiers split across a command boundary ("S \mathrm{K}").
+    inner = _merge_split_identifiers(inner)
+
+    # 4. Fix superscripts nested inside subscripts.
     prev = None
     while prev != inner:
         prev = inner
         inner = _fix_subscript_nesting(inner)
 
-    # 4. ``...`` / ``. . .`` -> \dots, ``\bullet \bullet \bullet`` -> \dots
+    # 5. ``...`` / ``. . .`` -> \dots, ``\bullet \bullet \bullet`` -> \dots
     inner = _DOTS.sub(r"\\dots", inner)
     inner = _BULLETS.sub(r"\\dots", inner)
 
-    # 5. Function names -> \operatorname.
+    # 6. Function names -> \operatorname.
     inner = _to_operatorname(inner)
 
-    # 6. Cosmetic spacing around braces and sub/sup.
+    # 7. Wrap remaining bare identifiers (keys / fields / entities) in \mathrm.
+    inner = _wrap_bare_identifiers(inner)
+
+    # 8. Cosmetic spacing around braces and sub/sup.
     inner = _clean_spacing(inner)
 
     return f"{delim}{inner}{delim}"

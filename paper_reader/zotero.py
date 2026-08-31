@@ -53,7 +53,8 @@ class ZoteroLibrary:
             raise FileNotFoundError(
                 f"Zotero 数据库不存在: {db}，请在 config.yaml 配置 zotero.data_dir"
             )
-        self._conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        self._conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True,
+                                     check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
 
     def close(self) -> None:

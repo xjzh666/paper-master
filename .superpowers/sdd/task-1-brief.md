@@ -1,141 +1,55 @@
-### Task 1: Add data models to agent.py
+### Task 1: 新增 Observation dataclass 和 _smart_truncate 辅助函数
 
 **Files:**
-- Create: `paper_reader/agent.py`
+- Modify: `paper_reader/agent.py` (在 ToolResult 之后插入)
 
 **Interfaces:**
-- Produces: `Resource`, `ToolResult`, `LLMToolResponse`, `Tool` dataclasses
+- Produces: `Observation` dataclass (summary: str, facts: list[str], entities: list[str], sources: list[str])
+- Produces: `_smart_truncate(text: str, max_chars: int = 300) -> str`
 
-- [ ] **Step 1: Write the test**
+**Description:** 在 agent.py 顶部添加 Observation 数据类和智能截断函数，为后续工具和压缩逻辑提供基础。
 
-Create `tests/test_agent.py`:
+- [ ] **Step 1: 添加 Observation dataclass 和 _smart_truncate**
+
+在 `agent.py` 第 28 行（ToolResult 定义之后）插入：
 
 ```python
-from paper_reader.agent import Resource, ToolResult, LLMToolResponse, Tool
+@dataclass
+class Observation:
+    """LLM 在每轮检索后记录的结构化观察。"""
+    summary: str
+    facts: list[str] = field(default_factory=list)
+    entities: list[str] = field(default_factory=list)
+    sources: list[str] = field(default_factory=list)
 
 
-def test_resource_creation():
-    r = Resource(type="image", id="img_3", path="/tmp/img.png", caption="Fig. 1")
-    assert r.type == "image"
-    assert r.id == "img_3"
-    assert r.path == "/tmp/img.png"
-    assert r.caption == "Fig. 1"
-
-
-def test_resource_load_data_reads_file(tmp_path):
-    p = tmp_path / "test.png"
-    p.write_bytes(b"fake_image_data")
-    r = Resource(type="image", id="img_1", path=str(p), caption="")
-    assert r.load_data() == b"fake_image_data"
-
-
-def test_resource_load_data_missing_file():
-    r = Resource(type="image", id="img_1", path="/nonexistent.png", caption="")
-    assert r.load_data() == b""
-
-
-def test_tool_result_creation():
-    r = Resource(type="image", id="img_1", path="/tmp/a.png", caption="Fig 1")
-    tr = ToolResult(text="some text", resources=[r])
-    assert tr.text == "some text"
-    assert len(tr.resources) == 1
-
-
-def test_tool_result_default_resources():
-    tr = ToolResult(text="text only")
-    assert tr.resources == []
-
-
-def test_llm_tool_response_text_only():
-    resp = LLMToolResponse(text="hello")
-    assert resp.text == "hello"
-    assert resp.tool_calls == []
-
-
-def test_llm_tool_response_with_calls():
-    tc = {"id": "call_1", "name": "search_paper", "arguments": {"query": "test"}}
-    resp = LLMToolResponse(tool_calls=[tc])
-    assert resp.text is None
-    assert len(resp.tool_calls) == 1
-
-
-def test_tool_dataclass():
-    t = Tool(
-        name="search_paper",
-        description="语义检索",
-        parameters={"type": "object", "properties": {}},
-        callable=lambda query: ToolResult(text=query),
-    )
-    result = t.callable(query="hello")
-    assert result.text == "hello"
+def _smart_truncate(text: str, max_chars: int = 300) -> str:
+    """在句子边界截断文本，避免断句。"""
+    if len(text) <= max_chars:
+        return text
+    truncated = text[:max_chars]
+    for sep in ['. ', '。', '\n', '；', '; ']:
+        idx = truncated.rfind(sep)
+        if idx > max_chars * 0.5:
+            truncated = truncated[:idx + len(sep)]
+            break
+    return truncated.rstrip() + f"\n[已截断，原文共 {len(text)} 字]"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: 运行现有测试确认无回归**
 
 ```bash
 python3 -m pytest tests/test_agent.py -v
 ```
-Expected: FAIL with ModuleNotFoundError
 
-- [ ] **Step 3: Write minimal implementation**
+Expected: 全部 PASS（新代码未被引用，不影响现有测试）
 
-Create `paper_reader/agent.py`:
-
-```python
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Callable
-
-
-@dataclass
-class Resource:
-    """工具返回的资源引用，只存索引不存数据，避免上下文膨胀。"""
-    type: str              # "image" | "table"
-    id: str                # "img_3", "table_2"
-    path: str              # 文件路径，describe_image 时才加载
-    caption: str           # 图注 / 周边文本
-
-    def load_data(self) -> bytes:
-        p = Path(self.path)
-        if p.exists():
-            return p.read_bytes()
-        return b""
-
-
-@dataclass
-class ToolResult:
-    text: str
-    resources: list[Resource] = field(default_factory=list)
-
-
-@dataclass
-class LLMToolResponse:
-    text: str | None = None
-    tool_calls: list[dict] = field(default_factory=list)
-
-
-@dataclass
-class Tool:
-    name: str
-    description: str
-    parameters: dict       # JSON Schema
-    callable: Callable[..., ToolResult]
-```
-
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 3: 提交**
 
 ```bash
-python3 -m pytest tests/test_agent.py -v
-```
-Expected: PASS
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add paper_reader/agent.py tests/test_agent.py
-git commit -m "feat: add Resource, ToolResult, Tool data models for agent"
+git add paper_reader/agent.py
+git commit -m "feat: add Observation dataclass and _smart_truncate helper"
 ```
 
 ---
 
-### Task 2: Add chat_with_tools to OpenAIClient and LLMRouter

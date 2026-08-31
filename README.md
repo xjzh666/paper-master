@@ -114,17 +114,39 @@ uvicorn paper_reader.server:app
 
 paper-master 现在是**本地 Web 应用**：浏览器访问 `localhost:8000`，在 Zotero 库里选论文 → 异步解析 → 阅读 markdown + SSE 流式对话。API 与前端单端口托管，无需分开起服务。
 
-### 安装 / 准备
+### 首次使用（一次性准备）
+
+后端依赖已装在 `.venv`（含 MinerU）；前端需要另外构建一次，并创建一条一键启动命令：
 
 ```bash
-# 后端依赖（含 MinerU）已装好后，构建前端产物：
+# 1. 构建前端产物
 cd frontend && npm install && npm run build
 # 产物生成到 frontend/dist/，server.py 自动托管
+
+# 2. 创建 paper-web 一键启动命令（任意目录可敲，无需参数）
+cat > ~/.local/bin/paper-web <<'EOF'
+#!/bin/bash
+cd /home/xiejiezhen/paper-master
+source .venv/bin/activate
+( sleep 2; explorer.exe "http://localhost:8000" >/dev/null 2>&1 || true ) &
+exec uvicorn paper_reader.server:app --host 127.0.0.1 --port 8000
+EOF
+chmod +x ~/.local/bin/paper-web
 ```
 
-### 启动（生产，单端口）
+> 跳过第 1 步直接启动，浏览器会看到 `404 Not Found`（`frontend/dist/` 不存在时，server.py 按设计跳过静态托管）。
 
-**Windows：双击 `launch.bat`** —— 自动拉起 WSL 里的 uvicorn（`127.0.0.1:8000`）并打开浏览器。
+### 启动（每次使用）
+
+在 WSL 终端里敲一条命令（自动激活 venv、起后端、打开浏览器）：
+
+```bash
+paper-web
+```
+
+- 无需参数，任意目录可敲；启动后自动打开浏览器访问 `http://localhost:8000`
+- 停止：在终端按 `Ctrl+C`
+- 端口被占用（上次没停干净）时，先 `pkill -f "uvicorn paper_reader.server"` 再启动
 
 手动启动等同：
 

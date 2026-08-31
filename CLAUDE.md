@@ -35,18 +35,22 @@ paper_reader/
   ├── context.py         # 对话上下文 + BGE-M3 向量检索 + 窗口构建
   ├── zotero.py          # Zotero 只读数据层（collections/items/search/get_item/resolve_pdf）
   ├── papers.py          # Web 会话仓库：Session 管理 + 异步 MinerU 解析 + chat_events SSE 事件源
-  ├── latex_fix.py       # OCR 公式 LaTeX 规范化（HTML标签→上下标、字母间距、上下标嵌套、\dots、\operatorname），get_content 时应用
+  ├── latex_fix.py       # OCR 公式 LaTeX 语义规范化（HTML→上下标、字母间距、上下标嵌套、\dots、\operatorname、标识符 \mathrm 包装），serve-time 应用
+  ├── math_quality.py    # 数学质量层：公式覆盖率统计 + OCR/编码异常检测 + prose OCR 规范化 + Unicode 数学字符/污染检测（含 CLI）
   └── server.py          # FastAPI：/api/zotero/* + /api/papers/* 接口 + 前端静态托管（mount("/")）
 frontend/                # Web 前端（React + TypeScript + Ant Design + Vite）
   ├── src/               # App 三栏：论文列表 / markdown 阅读区 / SSE 对话区 + api client
-  │                      # 阅读区：react-markdown + remark-math/rehype-katex（公式）+ rehype-raw（HTML 表格/sub/sup）+ github-markdown-css
+  │   ├── markdown/      # rehypeMathInHtml 插件：渲染原生 HTML table 内的 $..$（remark-math 看不到的部分）
+  │   │                  # 阅读区：react-markdown + remark-math/rehype-katex（公式）+ rehype-raw（HTML 表格/sub/sup）+ rehypeMathInHtml + github-markdown-css
+  │   └── ...
+  ├── scripts/           # math-coverage.mjs：公式覆盖率校验（raw → remark-math → raw-HTML → KaTeX 渲染计数）
   └── dist/              # 构建产物（npm run build 输出，server.py 静态托管）
-tests/                   # 202 个测试，全过
+tests/                   # 225 个 Python 测试 + 12 个前端 vitest，全过
 config.example.yaml      # 配置模板（提交）
 config.yaml              # 实际配置（gitignore）
 .venv/                   # 虚拟环境（gitignore）
 papers/                  # 测试用 PDF 论文（gitignore）
-launch.bat               # Windows 双击启动脚本（拉起 uvicorn + 打开浏览器）
+launch.bat               # Windows 双击启动脚本（已废弃，改用 paper-web 命令）
 ```
 
 ### 当前数据流（Agent + 工具模式，已实现）
@@ -161,7 +165,13 @@ LLMToolResponse       — LLM 返回解析 {text, tool_calls}
   - [x] **/api/papers/* 端点** — `open` / `{id}/status` / `{id}/overview` / `{id}/content`（markdown 图片重写为 `/api/papers/{id}/images/*`）/ `{id}/chat`（SSE 真流式）
   - [x] **前端脚手架 + 三栏布局** — React + TypeScript + Ant Design + Vite；左栏论文列表/收藏夹、中间 SSE 对话面板、右侧 markdown 阅读面板
   - [x] **API client + SSE 解析器** — `frontend/src/api/client.ts` + `sse.ts`（按 `event:` 帧解析并分发 tool_start/answer_chunk/clear/done/error）
-  - [x] **生产静态托管** — `server.py` 末尾 `mount("/", StaticFiles(html=True))`，单端口 8000 同时服务 API 与前端；`launch.bat` Windows 双击启动
+  - [x] **生产静态托管** — `server.py` 末尾 `mount("/", StaticFiles(html=True))`，单端口 8000 同时服务 API 与前端；`paper-web` 命令一键启动
+- [x] **数学渲染清洗 pipeline（论文级公式质量优化）** — 见"公式渲染注意事项"。包含：
+  - [x] **LaTeX 语义规范化（`latex_fix.py`）** — 裸标识符/密钥/字段统一 `\mathrm{}`（白名单：PK/SK/OTK/SOTK/Cert/aid/uid/name/device/IP/port…）、跨命令边界拆分的标识符合并（`S \mathrm{K}`→`\mathrm{SK}`）、函数名 `\operatorname`、`\mathbb`/`\mathcal`/`\boldsymbol` 字母间距折叠、下标内上标嵌套、集合/元组 `\dots`
+  - [x] **HTML table 内公式渲染（`rehypeMathInHtml.ts`）** — 修复 remark-math 看不到原生 `<table>` 内 `$..$` 的问题，挂在 rehypeRaw 之后用 KaTeX 渲染
+  - [x] **公式覆盖率校验（`math-coverage.mjs`）** — raw → remark-math → raw-HTML → KaTeX 计数 + Lost candidates；5 篇真实论文 594→594，Lost=0
+  - [x] **OCR/编码异常检测与 prose 规范化（`math_quality.py`）** — `\ufffd` 检测+移除、Ḋ/Ḍ 点号重音检测 + prose-only 规范化（不改 math block）、Unicode 数学字符检测（σ/∈/≤→…）、Markdown/LaTeX 污染检测（未闭合 `$`/`\(`/`\[`、`\_` 转义、`\text{}` 内错误数学）
+  - [x] 测试：225 个 Python + 12 个前端 vitest 全过
 
 ## 进行中
 
@@ -222,14 +232,14 @@ LLMToolResponse       — LLM 返回解析 {text, tool_calls}
 - 后端：**FastAPI**（复用 `paper_reader/`，Python 直接读 Zotero sqlite + 单端口静态托管）
 - PDF 阅读：**渲染 MinerU 解析结果（markdown + 章节 + 图片）**，不集成 pdf.js
 - Zotero：**只读**（列出条目 + 打开论文）
-- 启动：**`launch.bat`** Windows 双击（拉起 uvicorn + 打开浏览器），或手动 `uvicorn paper_reader.server:app`
+- 启动：**`paper-web`** 一条命令（`~/.local/bin/paper-web` 脚本，拉起 uvicorn + 打开浏览器），或手动 `uvicorn paper_reader.server:app`
 
 **规划任务（Web 应用 MVP）：**
 - [x] 摸清 Zotero 数据库 schema
 - [x] FastAPI 后端：Zotero 条目列表 API + 打开论文
 - [x] `papers.py` 会话仓库 + 异步解析 + SSE 对话
 - [x] React 前端：论文列表 + 收藏夹树 + 阅读区（markdown 渲染）+ 对话区
-- [x] 生产静态托管（单端口）+ `launch.bat`
+- [x] 生产静态托管（单端口）+ `paper-web` 命令
 - [ ] **本地知识库：多论文统一索引（下一版）** — 当前单论文会话；下一版做跨论文检索/统一索引
 
 ### P5：暂缓
@@ -263,8 +273,9 @@ LLMToolResponse       — LLM 返回解析 {text, tool_calls}
 10. **Paper Memory**：论文理解不止依赖 chunk embedding，LLM 一次性抽取 10 个结构化字段（研究问题、动机、方法、实验、局限、关键词等），存入独立缓存。当前单论文直接注入 system prompt，后续多论文时改造为 Agent 工具按需调用。关键词留作多论文路由筛选
 11. **Tool Result 压缩**：不增加额外 API 调用，利用 LLM 同一轮的多工具调用能力（record_observation + search_paper 在同一个 tool_calls 里发出）。保留最近 `KEEP_RECENT_ROUNDS=3` 轮完整（保证模型能回读证据，避免"证据被压后反复重搜"），更早的替换为 observation 摘要，无 observation 时降级为智能截断。压缩阈值必须严格保证"工具结果在第一次被模型读到前完整"（曾有 off-by-one bug）
 12. **三层记忆架构**：L1 Conversation Memory（messages，最新轮完整，往轮压缩）、L2 Observation Memory（结构化观察，`self._observations`，注入 system prompt）、L3 Evidence Memory（来源追溯，Observation.sources 字段已就绪，P3 完善）
-13. **桌面形态从 Tauri 改为 Web 应用**：早期定 Tauri，后改为纯 Web 应用（React+Vite 前端 + FastAPI 单端口静态托管 + `launch.bat` 双击启动）。理由：GPU 与 Zotero 数据都在 WSL2，浏览器天然跨 Windows/WSL 边界（无需 WSLg）；免装 Rust 工具链；单端口部署简单。代价：无系统托盘/原生窗口，但当前功能（读 PDF + 对话）浏览器足够。`launch.bat` 用 `wsl -e bash -c` 拉起 uvicorn 再开浏览器
+13. **桌面形态从 Tauri 改为 Web 应用**：早期定 Tauri，后改为纯 Web 应用（React+Vite 前端 + FastAPI 单端口静态托管 + `paper-web` 命令一键启动）。理由：GPU 与 Zotero 数据都在 WSL2，浏览器天然跨 Windows/WSL 边界（无需 WSLg）；免装 Rust 工具链；单端口部署简单。代价：无系统托盘/原生窗口，但当前功能（读 PDF + 对话）浏览器足够。启动命令 `paper-web` 是 `~/.local/bin/paper-web` 脚本（激活 venv + 拉起 uvicorn + 开浏览器），旧 `launch.bat` 双击方案已废弃
 14. **静态托管挂在 `/`**：`server.py` 的 `create_app(data_dir=None, frontend_dist=None)` 在**所有 API 路由之后** `mount("/", StaticFiles(html=True))`（默认指向 `frontend/dist`）。FastAPI 按注册顺序匹配，API 路由优先，前端 SPA 兜底。`frontend_dist` 可显式传入（测试用临时目录），dist 不存在时静默跳过（纯 API 模式不受影响）
+15. **`paper-web` 一键启动 + 两个启动前置**：启动命令是 `~/.local/bin/paper-web` bash 脚本（`cd` 项目 + `source .venv/bin/activate` + 后台 `explorer.exe` 开浏览器 + `exec uvicorn`），任意目录可敲、无参数。两个易踩的坑：① **前端 `npm run build` 是首次启动前置**——`frontend/dist/` 不存在时 server.py 静默跳过静态托管，根路径 `/` 返回 404（需构建后重启后端才生效）；② **Zotero sqlite 连接必须 `check_same_thread=False`**——`get_library` 是带 yield 的同步依赖，FastAPI 线程池里创建连接与执行查询在不同线程，默认 `check_same_thread=True` 会报 `SQLite objects created in a thread can only be used in that same thread`；只读连接（`mode=ro`）+ `sqlite3.threadsafety=1`（serialized）下关掉检查是安全的。旧 `launch.bat`（需 CRLF + 纯 ASCII）已废弃
 
 ## 常用命令
 
@@ -277,11 +288,16 @@ python3 main.py --batch papers/               # 批量预热
 python3 main.py --zotero                 # 从 Zotero 库选论文阅读（CLI）
 
 uvicorn paper_reader.server:app          # FastAPI（Web 版后端，单端口 8000 托管 API + 前端）
-launch.bat                             # Windows 双击启动（拉起 uvicorn + 打开浏览器）
+paper-web                              # 一键启动 Web 版（激活 venv + 起 uvicorn + 开浏览器）
 
 cd frontend && npm run dev              # 前端开发模式（Vite HMR，需后端已起）
 cd frontend && npm run build            # 构建前端到 dist/（server.py 静态托管）
-python3 -m pytest tests/ -v                   # 测试 (190)
+
+python3 -m pytest tests/ -v                   # Python 测试 (225)
+cd frontend && npx vitest run                 # 前端 vitest (12)
+python3 -m paper_reader.math_quality paper.md        # 数学质量分析（OCR/编码/污染）
+python3 -m paper_reader.math_quality paper.md --fix out.md  # 输出清洗后的 md
+cd frontend && node scripts/math-coverage.mjs out.md      # 公式覆盖率校验
 GIT_SSL_NO_VERIFY=true git push               # 推送
 ```
 
@@ -306,3 +322,33 @@ GIT_SSL_NO_VERIFY=true git push               # 推送
 - 首次解析一篇论文约 1-2 分钟（VLM 模型加载 + 推理），之后从缓存秒加载
 - MinerU 自动下载模型到 `~/.cache/modelscope/models/`（MinerU2.5-Pro-2605-1.2B，约 2.15 GiB）
 - `content_list_v2.json` 是分页嵌套结构，v1 是平铺列表。`_normalize_items` 方法统一处理
+
+## 公式渲染注意事项（数学渲染清洗 pipeline）
+
+数学渲染是一个多阶段流水线：`PDF → Markdown → 公式/OCR/HTML 清洗 → LaTeX 语义规范化 → Math coverage 校验 → KaTeX 渲染`。
+
+**后端（Python）—— serve-time 清洗：**
+- `papers.get_content` 调 `math_quality.fix_paper_markdown(md)` = `fix_markdown_math()` + `normalize_ocr_prose()`，再重写图片 URL。
+- `latex_fix.fix_latex_math` 语义规范化（按顺序）：① HTML `<sub>/<sup>`→`_{}/^{}` ② `\mathrm{...}` 等 font 命令字母间距折叠（含 `\mathbb`/`\mathcal`/`\boldsymbol`）③ 跨命令边界拆分的标识符合并（`S \mathrm{K}`→`\mathrm{SK}`）④ 下标内上标嵌套修复 ⑤ `...`/`\bullet\bullet\bullet`→`\dots` ⑥ 函数名→`\operatorname` ⑦ 裸标识符（`PK`/`SK`/`OTK`/`aid`/`uid`/`name`…白名单）→`\mathrm{}` ⑧ 括号/上下标空白折叠。
+- **显示公式结尾的 `$$` 必须独占一行**：`_clean_spacing` 只折叠空格/制表符（`[ \t]*`），**绝不能折叠换行**——否则 remark-math 不认行尾 `$$` 为闭合符（回归测试 `test_display_math_keeps_newline_before_closing_delim`）。
+- **改 latex_fix.py / math_quality.py 后重启后端即可**（serve-time 应用，无需前端重建）。
+
+**`math_quality.py`（公式覆盖率 + OCR/编码/污染检测）：**
+- `count_math_candidates`（raw `$...$`/`$$...$$` 计数）、`detect_encoding_errors`（`\ufffd`）、`detect_ocr_diacritics`（Ḋ/Ḍ 类点号）、`detect_unicode_math`（prose 内 σ/∈/≤→…）、`detect_pollution`（未闭合 `$`/`\(`/`\[`、`\_` 转义、`\text{}` 内错误数学）。
+- `normalize_ocr_prose`：只清洗 **prose**（标题/正文/caption）的点号重音 + 移除 `\ufffd`，**不改 math block**（避免破坏公式）。
+- CLI：`python3 -m paper_reader.math_quality <file.md> [--fix out.md] [--json]`。
+
+**前端（TS）—— HTML table 内公式：**
+- remark-math 只处理 markdown AST，看不到原生 `<table>` 里的 `$...$`；`rehypeRaw` 在 `rehypeKatex` 之后才展开 HTML。新增 `frontend/src/markdown/rehypeMathInHtml.ts` 插件，挂在 **rehypeRaw 之后**，把 table 单元格文本里的 `$...$`/`$$...$$` 用 KaTeX 渲染（分隔符正则与 `_MATH_SPLIT` 保持一致）。改前端后需 `npm run build`。
+
+**KaTeX 版本必须全局对齐（2026-08-31 修复的公式重叠 bug）：**
+- 症状：display 公式（`$$`）正常，**inline 高公式**（如 `$\begin{array}...\end{array}$`）与上下行文字垂直重叠。
+- 根因：`main.tsx` 的 CSS import 解析到顶层 katex，而 `rehype-katex@7`（最新版，锁定 `katex@^0.16`）用嵌套 katex 渲染。顶层装 0.18.4 时 CSS 类名（`katex-strut`/`katex-base`/`katex-sizing`）与 DOM 类名（`strut`/`base`/`sizing`）不匹配，关键规则 `.katex .strut{display:inline-block}` 缺失 → strut 沦为普通 inline span（height 无效）→ 行盒不再为高公式保留高度 → 溢出重叠。
+- 修复：顶层 `katex` 降到 `^0.16.47` 与渲染器 dedupe 成同一份（CSS / rehype-katex / rehypeMathInHtml 三处一致），`npm run build` 重建 dist。
+- 回归测试：`frontend/src/markdown/katexCssSync.test.ts` 锁住"渲染器输出类名 ⇔ CSS 规则覆盖"不变量（版本一致 + strut/sizing 规则存在 + 多行 inline array strut 高度 > 2em）。
+- **升级 katex / rehype-katex 前必查**：rehype-katex 最新版只支持 katex ^0.16；若未来升级，CSS 与渲染器必须同步，跑 `npx vitest run` 验证。
+
+**Math coverage 校验（`frontend/scripts/math-coverage.mjs`）：**
+- `node scripts/math-coverage.mjs <cleaned.md> [...]` 输出：`Raw math candidates` / `remark-math nodes` / `raw-HTML math` / `KaTeX rendered` / `Lost candidates`。5 篇真实论文实测 594 candidates → 594 rendered，**Lost = 0**（此前 table 内 198 条是 lost，现已全部渲染）。
+
+**已知限制（未处理）：** 公式内部的 OCR 点号重音（如 `\mathrm{ḊCGḌ}`）**不在 prose 清洗范围内**（"不改 math block"），KaTeX 以警告 + 回退字形渲染，不报错。

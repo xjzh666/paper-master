@@ -5,6 +5,7 @@ import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import rehypeRaw from 'rehype-raw'
 import rehypeSlug from 'rehype-slug'
+import rehypeMathInHtml from '../markdown/rehypeMathInHtml'
 import GithubSlugger from 'github-slugger'
 import type { PaperOverview } from '../api/client'
 
@@ -55,7 +56,7 @@ export default function ReadingPanel({ status, error, overview, markdown }: Prop
         />
       )}
       <div className="markdown-body">
-        <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeSlug, rehypeKatex, rehypeRaw]}>
+        <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeSlug, rehypeKatex, rehypeRaw, rehypeMathInHtml]}>
           {markdown}
         </ReactMarkdown>
       </div>

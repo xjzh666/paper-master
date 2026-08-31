@@ -110,9 +110,9 @@ def get_content(paper_id: str) -> str:
         return ""
     text = md_files[0].read_text(encoding="utf-8", errors="replace")
 
-    # Normalize OCR'd LaTeX in math blocks so KaTeX renders correctly.
-    from paper_reader.latex_fix import fix_markdown_math
-    text = fix_markdown_math(text)
+    # Normalize OCR'd LaTeX (math blocks) + prose OCR/encoding cleanup.
+    from paper_reader.math_quality import fix_paper_markdown
+    text = fix_paper_markdown(text)
 
     def _rewrite(m: re.Match) -> str:
         rel = m.group(2)

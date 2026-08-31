@@ -13,7 +13,8 @@ def test_html_sub_sup_in_math():
     # GenCert is a known function, so it also becomes \operatorname.
     assert fix_latex_math("$\\mathrm{GenCert}<sub>X</sub>(m)$") == \
         "$\\operatorname{GenCert}_{X}(m)$"
-    assert fix_latex_math("$OTK<sup>i</sup>_{A}$") == "$OTK^{i}_{A}$"
+    # OTK is a known identifier, so it also becomes \mathrm{OTK}.
+    assert fix_latex_math("$OTK<sup>i</sup>_{A}$") == "$\\mathrm{OTK}^{i}_{A}$"
 
 
 # ── letter-spacing ─────────────────────────────────────────────────────
@@ -102,3 +103,77 @@ def test_math_blocks_still_renderable():
                         fix_markdown_math("$a$ $\\mathrm { V e r i f y }$ $$x^{2}$$"),
                         re.DOTALL)
     assert len(blocks) == 3
+
+
+def test_display_math_keeps_newline_before_closing_delim():
+    """Multi-line display math ending in ``}``/``)`` must keep the newline
+    before the closing ``$$``.
+
+    Regression: ``_clean_spacing`` used ``\\s*`` around braces, which also
+    stripped the ``\\n``, merging the closing ``$$`` onto the content line
+    (``...\\tag{1}$$``). remark-math then failed to see ``$$`` as the closing
+    delimiter: the ``$$`` leaked into the KaTeX value (red ``katex-error``)
+    and the next block's opening ``$$`` got swallowed (raw ``\\begin{array}``
+    text). See the Attention-is-All-you-Need markdown (blocks ending in
+    ``\\tag{1}``/``\\end{array}``).
+    """
+    src = "$$\n\\operatorname{Attention}(Q, K, V) V\\tag{1}\n$$"
+    out = fix_markdown_math(src)
+    assert out == "$$\n\\operatorname{Attention}(Q, K, V)V\\tag{1}\n$$"
+    assert out.endswith("\n$$"), out
+    assert "\\tag{1}$$" not in out
+
+
+# ── Section 1: semantic normalization (identifiers / functions) ─────────
+
+def test_bare_identifiers_wrapped_in_mathrm():
+    assert fix_latex_math(r"$aid_A = uid_U : name_A$") == \
+        r"$\mathrm{aid}_A = \mathrm{uid}_U : \mathrm{name}_A$"
+    assert fix_latex_math(r"$device_A, IP_A, port_A$") == \
+        r"$\mathrm{device}_A, \mathrm{IP}_A, \mathrm{port}_A$"
+
+
+def test_key_names_wrapped_in_mathrm():
+    for src, want in [
+        (r"$PK_A$", r"$\mathrm{PK}_A$"),
+        (r"$SK_A$", r"$\mathrm{SK}_A$"),
+        (r"$OTK_A^i$", r"$\mathrm{OTK}_A^i$"),
+        (r"$SOTK_A^i$", r"$\mathrm{SOTK}_A^i$"),
+        (r"$Cert_A$", r"$\mathrm{Cert}_A$"),
+    ]:
+        assert fix_latex_math(src) == want, f"{src} -> {fix_latex_math(src)}"
+
+
+def test_split_identifier_merged():
+    # OCR split "SK" into a bare "S" + "\mathrm{K}".
+    assert fix_latex_math(r"$S \mathrm{K}_{\mathbb{U}}$") == \
+        r"$\mathrm{SK}_{\mathbb{U}}$"
+
+
+def test_identifier_inside_subscript_wrapped():
+    assert fix_latex_math(r"$\sigma^U_{OTK^i}$") == r"$\sigma^U_{\mathrm{OTK}^i}$"
+
+
+def test_identifier_not_double_wrapped():
+    # Already-wrapped identifiers must not gain a second \mathrm layer.
+    assert fix_latex_math(r"$\mathrm{PK}_A$") == r"$\mathrm{PK}_A$"
+    assert fix_latex_math(r"$\mathrm{OTK}_A^i$") == r"$\mathrm{OTK}_A^i$"
+
+
+def test_function_names_become_operatorname_with_subscript():
+    assert fix_latex_math(r"$\mathrm{GenCert}_{SK_{CA}}$") == \
+        r"$\operatorname{GenCert}_{\mathrm{SK}_{CA}}$"
+    assert fix_latex_math(r"$\mathrm{Sign}_{SK_U}$") == \
+        r"$\operatorname{Sign}_{\mathrm{SK}_U}$"
+
+
+def test_blackboard_letter_spacing_collapsed():
+    # \mathbb { I P } -> \mathbb{IP} (keep the font, drop OCR spacing).
+    assert fix_latex_math(r"$\mathbb{I P}_{\mathtt{A}}$") == \
+        r"$\mathbb{IP}_{\mathtt{A}}$"
+
+
+def test_set_tuple_ellipsis():
+    src = r"$\{(\mathrm{OTK}_A^1,\mathrm{SOTK}_A^1),...\}$"
+    assert fix_latex_math(src) == \
+        r"$\{(\mathrm{OTK}_A^1,\mathrm{SOTK}_A^1),\dots\}$"
