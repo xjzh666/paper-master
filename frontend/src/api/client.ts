@@ -28,6 +28,11 @@ export interface OpenResult {
   status: string
 }
 
+export interface ChatMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
 export interface ParseStatus {
   status: string
   message?: string
@@ -54,4 +59,10 @@ export const api = {
   paperStatus: (paperId: string) => get<ParseStatus>(`/api/papers/${paperId}/status`),
   overview: (paperId: string) => get<PaperOverview>(`/api/papers/${paperId}/overview`),
   content: (paperId: string) => get<{ markdown: string }>(`/api/papers/${paperId}/content`),
+  history: (paperId: string) =>
+    get<{ messages: ChatMessage[] }>(`/api/papers/${paperId}/history`),
+  clearHistory: (paperId: string) =>
+    fetch(`/api/papers/${paperId}/history`, { method: 'DELETE' }).then((r) => {
+      if (!r.ok) throw new Error(`DELETE /api/papers/${paperId}/history → ${r.status}`)
+    }),
 }

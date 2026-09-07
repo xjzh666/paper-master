@@ -170,8 +170,8 @@ cd frontend && npm run dev
 ### Web 版功能
 
 - 左栏：Zotero 收藏夹树 + 论文列表（搜索/按收藏夹筛选）
-- 中间：SSE 流式对话（`tool_start` / `answer_chunk` 增量渲染）
-- 右栏：MinerU 解析的 markdown 阅读区（章节 + 图片）
+- 中间：SSE 流式对话（`tool_start` / `answer_chunk` 增量渲染），对话历史自动恢复（刷新/重启不丢，历史与本轮消息间有分割线，可一键清空）
+- 右栏：MinerU 解析的 markdown 阅读区（章节 + 图片 + 公式；OCR 公式规范化 + KaTeX 渲染，含 HTML 表格内公式）
 - 首次打开论文后台异步解析（MinerU），前端轮询 `/status` 到 `ready`
 
 ### 命令

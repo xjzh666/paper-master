@@ -1,15 +1,13 @@
-import { useState } from 'react'
-import { Input, List, Typography, Collapse, Tag, Empty, Space } from 'antd'
+import { Fragment, memo, useEffect, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import { Button, Divider, Input, List, Typography, Collapse, Tag, Empty, Space } from 'antd'
 import { postChatSSE } from '../api/sse'
+import { api, type ChatMessage } from '../api/client'
+import { remarkPlugins, rehypePlugins } from '../markdown/plugins'
 
 interface Props {
   paperId: string | null
   disabled: boolean
-}
-
-interface Msg {
-  role: 'user' | 'assistant'
-  content: string
 }
 
 interface ToolLog {
@@ -18,11 +16,50 @@ interface ToolLog {
   chars: number
 }
 
+const MarkdownMessage = memo(function MarkdownMessage({ content }: { content: string }) {
+  return (
+    <div className="markdown-body" style={{ fontSize: 14 }}>
+      <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins}>
+        {content}
+      </ReactMarkdown>
+    </div>
+  )
+})
+
 export default function ChatPanel({ paperId, disabled }: Props) {
-  const [messages, setMessages] = useState<Msg[]>([])
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [historyCount, setHistoryCount] = useState(0)
   const [toolLog, setToolLog] = useState<ToolLog[]>([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    setMessages([])
+    setHistoryCount(0)
+    setToolLog([])
+    if (!paperId) return
+    let stale = false
+    api.history(paperId)
+      .then((r) => {
+        if (stale) return
+        setMessages(r.messages)
+        setHistoryCount(r.messages.length)
+      })
+      .catch(() => {})
+    return () => { stale = true }
+  }, [paperId])
+
+  const clearHistory = async () => {
+    if (!paperId || busy) return
+    try {
+      await api.clearHistory(paperId)
+      setMessages([])
+      setHistoryCount(0)
+      setToolLog([])
+    } catch {
+      /* 删除失败则保留现状 */
+    }
+  }
 
   const patchLastAnswer = (text: string) => {
     setMessages((m) => {
@@ -69,7 +106,14 @@ export default function ChatPanel({ paperId, disabled }: Props) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <Typography.Title level={5}>对话</Typography.Title>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <Typography.Title level={5}>对话</Typography.Title>
+        {messages.length > 0 && (
+          <Button size="small" type="text" danger onClick={clearHistory}>
+            清空
+          </Button>
+        )}
+      </div>
       {toolLog.length > 0 && (
         <Collapse
           size="small"
@@ -102,21 +146,45 @@ export default function ChatPanel({ paperId, disabled }: Props) {
         ) : (
           <List
             dataSource={messages}
-            renderItem={(m) => (
-              <List.Item style={{ justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start' }}>
-                <Typography.Paragraph
-                  style={{
-                    maxWidth: '80%',
-                    whiteSpace: 'pre-wrap',
-                    background: m.role === 'user' ? '#e6f4ff' : '#f5f5f5',
-                    padding: 8,
-                    borderRadius: 8,
-                    margin: 0,
-                  }}
-                >
-                  {m.content || (busy ? '思考中...' : '')}
-                </Typography.Paragraph>
+            renderItem={(m, i) => (
+              <Fragment key={i}>
+                {historyCount > 0 && i === historyCount && (
+                  <Divider plain style={{ fontSize: 12, color: '#999', margin: '4px 0' }}>
+                    以上是历史对话
+                  </Divider>
+                )}
+                <List.Item style={{ justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start' }}>
+                {m.role === 'assistant' ? (
+                  <div
+                    style={{
+                      maxWidth: '90%',
+                      background: '#f5f5f5',
+                      padding: 8,
+                      borderRadius: 8,
+                    }}
+                  >
+                    {m.content ? (
+                      <MarkdownMessage content={m.content} />
+                    ) : (
+                      <Typography.Text type="secondary">{busy ? '思考中...' : ''}</Typography.Text>
+                    )}
+                  </div>
+                ) : (
+                  <Typography.Paragraph
+                    style={{
+                      maxWidth: '80%',
+                      whiteSpace: 'pre-wrap',
+                      background: '#e6f4ff',
+                      padding: 8,
+                      borderRadius: 8,
+                      margin: 0,
+                    }}
+                  >
+                    {m.content}
+                  </Typography.Paragraph>
+                )}
               </List.Item>
+              </Fragment>
             )}
           />
         )}

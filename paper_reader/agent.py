@@ -3,7 +3,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from paper_reader.blocks import PaperMemory
+from paper_reader.blocks import PaperDocument, PaperMemory
+from paper_reader.observations import load_image_descriptions, save_image_descriptions
 
 
 @dataclass
@@ -35,6 +36,28 @@ class Observation:
     facts: list[str] = field(default_factory=list)
     entities: list[str] = field(default_factory=list)
     sources: list[str] = field(default_factory=list)
+    question: str = ""      # 产生该观察的用户提问（flush 到 session 时标记）
+
+    def to_dict(self) -> dict:
+        return {
+            "summary": self.summary,
+            "facts": list(self.facts),
+            "entities": list(self.entities),
+            "sources": list(self.sources),
+            "question": self.question,
+            "round_num": self.round_num,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Observation":
+        return cls(
+            summary=str(d.get("summary", "")),
+            facts=[str(x) for x in d.get("facts", [])],
+            entities=[str(x) for x in d.get("entities", [])],
+            sources=[str(x) for x in d.get("sources", [])],
+            question=str(d.get("question", "")),
+            round_num=int(d.get("round_num", -1)),
+        )
 
 
 def _smart_truncate(text: str, max_chars: int = 300) -> str:
@@ -84,6 +107,16 @@ def _format_memory(memory: PaperMemory) -> str:
     return "\n".join(lines)
 
 
+def _format_toc(paper: PaperDocument) -> str:
+    """Serialize section headings for injection into system prompt."""
+    headings = [b.text.strip() for b in paper.blocks if b.level > 0 and b.text.strip()]
+    if not headings:
+        return ""
+    lines = ["[论文章节目录]"]
+    lines.extend(f"- {h}" for h in headings[:50])
+    return "\n".join(lines)
+
+
 def _tool_to_openai_schema(tool: Tool) -> dict:
     """Convert a Tool to OpenAI function-calling schema."""
     return {
@@ -114,6 +147,22 @@ def _match_figure_alias(chunks: list, query: str) -> list:
         if label.lower() in aliases_lower or label_dot.lower() in aliases_lower:
             matched.append(chunk)
     return matched
+
+
+def _relative_image_path(ctx, full_path: str) -> str | None:
+    """Resource path → path relative to the paper's result_dir (stable cache key)."""
+    try:
+        return str(Path(full_path).resolve().relative_to(
+            Path(ctx.paper.result_dir).resolve()))
+    except (ValueError, OSError):
+        return None
+
+
+def _image_description_cache(ctx) -> dict:
+    """Lazy-load the persisted image-description cache onto ctx."""
+    if getattr(ctx, "image_descriptions", None) is None:
+        ctx.image_descriptions = load_image_descriptions(ctx.paper.filepath)
+    return ctx.image_descriptions
 
 
 def _make_tools(ctx, vision_client, resources_store: dict, observations_store: list) -> list[Tool]:
@@ -171,6 +220,11 @@ def _make_tools(ctx, vision_client, resources_store: dict, observations_store: l
         res = resources_store.get(resource_id)
         if res is None:
             return ToolResult(text=f"[未找到资源: {resource_id}]")
+        # 图像描述是论文级产物：按图片相对路径缓存，避免重复调 vision API
+        rel_path = _relative_image_path(ctx, res.path)
+        cache = _image_description_cache(ctx)
+        if rel_path is not None and rel_path in cache:
+            return ToolResult(text=cache[rel_path])
         data = res.load_data()
         if not data:
             return ToolResult(text="[图片无法读取]")
@@ -178,6 +232,9 @@ def _make_tools(ctx, vision_client, resources_store: dict, observations_store: l
             "请详细描述这张图片的内容，包括图表类型、关键数据、趋势或结构。",
             [data],
         )
+        if rel_path is not None:
+            cache[rel_path] = description
+            save_image_descriptions(ctx.paper.filepath, cache)
         return ToolResult(text=description)
 
     def record_observation(summary: str, facts: list[str] | None = None,
@@ -285,6 +342,8 @@ def _make_tools(ctx, vision_client, resources_store: dict, observations_store: l
 
 KEEP_RECENT_ROUNDS = 3  # 压缩时保留最近几轮 tool result 完整
 
+SESSION_OBSERVATION_LIMIT = 20  # 注入 system prompt 的 session 观察条数上限
+
 
 SYSTEM_PROMPT = """你是一个论文阅读助手。你根据提供的论文内容帮助用户理解学术论文。
 
@@ -296,10 +355,12 @@ SYSTEM_PROMPT = """你是一个论文阅读助手。你根据提供的论文内�
 - 如果提供的内容不足以回答问题，请明确说明
 - 讨论图表时，描述其展示的内容
 - 引用章节标题来为回答提供上下文
+- get_section 的 reference 一律从[论文章节目录]中选取，不要猜测章节名或编号
 - 拿到足够的检索结果后就应该尝试回答，不要反复更换查询词搜索
 - describe_image 返回"[图片无法读取]"说明图片文件不可用，直接用已有文本回答即可，不要再重试
 - 如果连续两次检索都没有找到新信息，请基于已有内容作答
 - 每次调用 search_paper 或 get_section 后，请同时调用 record_observation 记录本轮关键发现，便于后续推理时回顾
+- record_observation 的记录标准：有独立价值的事实（关键数字、实验设置、结论性陈述）即使与当前问题无直接关系也应记录，并始终在 sources 注明出处
 
 你可以使用工具来检索论文内容。根据用户问题自主判断是否需要调用工具。"""
 
@@ -364,113 +425,132 @@ class PaperAgent:
         system = SYSTEM_PROMPT
         if memory is not None:
             system = system + "\n\n" + _format_memory(memory)
+        toc = _format_toc(self._ctx.paper)
+        if toc:
+            system = system + "\n\n" + toc
 
         messages = list(history) if history else []
         messages.append({"role": "user", "content": question})
 
-        # 注入当前已累积的 observations
-        if self._observations:
-            obs_lines = ["[已知信息 — 之前检索已发现]"]
-            for i, obs in enumerate(self._observations):
-                obs_lines.append(f"{i + 1}. {obs.summary}")
+        # 注入 session 中已累积的 observations（最近若干条，跨提问复用）
+        session_obs = getattr(self._ctx, "observations", None) or []
+        if session_obs:
+            obs_lines = ["[已知信息 — 之前提问已检索到，未经复核]"]
+            for i, obs in enumerate(session_obs[-SESSION_OBSERVATION_LIMIT:]):
+                prefix = f"(问: {obs.question}) " if obs.question else ""
+                obs_lines.append(f"{i + 1}. {prefix}{obs.summary}")
             system = system + "\n\n" + "\n".join(obs_lines)
 
         tool_schemas = [_tool_to_openai_schema(t) for t in self._tools]
 
-        # 重置轮次追踪和观察（每次 run 是独立对话）
+        # 重置轮次追踪和本轮观察（session 观察在 ctx 上，不清）
         self._tool_round_map.clear()
         self._observations.clear()
 
-        for round_num in range(7):
-            # 发送前压缩往轮 tool result
-            compacted_messages = self._compact_messages(messages, round_num)
+        try:
+            for round_num in range(7):
+                # 发送前压缩往轮 tool result
+                compacted_messages = self._compact_messages(messages, round_num)
 
-            text_parts: list[str] = []
-            tool_calls: list[dict] = []
-            if stream:
-                for evt, payload in self._text_client.chat_with_tools_stream(
-                        compacted_messages, tool_schemas, system_prompt=system):
-                    if evt == "text_delta":
-                        text_parts.append(payload)
-                        if on_event is not None:
-                            on_event("answer_chunk", {"delta": payload})
-                    elif evt == "tool_calls":
-                        tool_calls = payload
-                response = LLMToolResponse(
-                    text="".join(text_parts) if not tool_calls else None,
-                    tool_calls=tool_calls,
-                )
-            else:
-                response = self._text_client.chat_with_tools(
-                    compacted_messages, tool_schemas, system_prompt=system)
-
-            if response.text and not response.tool_calls:
-                return response.text
-
-            if not response.tool_calls:
-                return response.text or ""
-
-            # Append assistant message with tool_calls
-            openai_tool_calls = []
-            for tc in response.tool_calls:
-                openai_tool_calls.append({
-                    "id": tc["id"],
-                    "type": "function",
-                    "function": {
-                        "name": tc["name"],
-                        "arguments": tc["arguments"] if isinstance(tc["arguments"], str) else json.dumps(tc["arguments"]),
-                    },
-                })
-            messages.append({
-                "role": "assistant",
-                "content": None,
-                "tool_calls": openai_tool_calls,
-            })
-
-            # tool-calling round: discard speculative text that was streamed live
-            if stream and on_event is not None and text_parts:
-                on_event("clear", {})
-
-            # Execute each tool call
-            for tc in response.tool_calls:
-                name = tc["name"]
-                raw_args = tc["arguments"]
-
-                if on_event is not None:
-                    on_event("tool_start", {"name": name, "arguments": raw_args})
-
-                try:
-                    args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
-                except json.JSONDecodeError:
-                    args = {}
-
-                tool = next((t for t in self._tools if t.name == name), None)
-                if tool is None:
-                    result = ToolResult(text=f"[未知工具: {name}]")
+                text_parts: list[str] = []
+                tool_calls: list[dict] = []
+                if stream:
+                    for evt, payload in self._text_client.chat_with_tools_stream(
+                            compacted_messages, tool_schemas, system_prompt=system):
+                        if evt == "text_delta":
+                            text_parts.append(payload)
+                            if on_event is not None:
+                                on_event("answer_chunk", {"delta": payload})
+                        elif evt == "tool_calls":
+                            tool_calls = payload
+                    response = LLMToolResponse(
+                        text="".join(text_parts) if not tool_calls else None,
+                        tool_calls=tool_calls,
+                    )
                 else:
-                    try:
-                        result = tool.callable(**args)
-                    except Exception as e:
-                        result = ToolResult(text=f"[工具执行失败: {e}]")
+                    response = self._text_client.chat_with_tools(
+                        compacted_messages, tool_schemas, system_prompt=system)
 
-                print(f"  [agent] {name}({str(raw_args)[:60]}{'...' if len(str(raw_args)) > 60 else ''})"
-                      f" → {len(result.text)} chars, {len(result.resources)} resources")
-                if on_event is not None:
-                    on_event("tool_result", {"name": name,
-                                             "chars": len(result.text),
-                                             "resources": len(result.resources)})
+                if response.text and not response.tool_calls:
+                    return response.text
 
+                if not response.tool_calls:
+                    return response.text or ""
+
+                # Append assistant message with tool_calls
+                openai_tool_calls = []
+                for tc in response.tool_calls:
+                    openai_tool_calls.append({
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {
+                            "name": tc["name"],
+                            "arguments": tc["arguments"] if isinstance(tc["arguments"], str) else json.dumps(tc["arguments"]),
+                        },
+                    })
                 messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "content": result.text,
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": openai_tool_calls,
                 })
-                # 记录 tool 消息所属轮次
-                self._tool_round_map[tc["id"]] = round_num
-                # 标记 record_observation 发生在哪一轮
-                if name == "record_observation" and self._observations:
-                    self._observations[-1].round_num = round_num
 
-        if stream and on_event is not None:
-            on_event("answer_chunk", {"delta": "抱歉，暂时没能找到相关信息，请尝试换一个问法。"})
-        return "抱歉，暂时没能找到相关信息，请尝试换一个问法。"
+                # tool-calling round: discard speculative text that was streamed live
+                if stream and on_event is not None and text_parts:
+                    on_event("clear", {})
+
+                # Execute each tool call
+                for tc in response.tool_calls:
+                    name = tc["name"]
+                    raw_args = tc["arguments"]
+
+                    if on_event is not None:
+                        on_event("tool_start", {"name": name, "arguments": raw_args})
+
+                    try:
+                        args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                    except json.JSONDecodeError:
+                        args = {}
+
+                    tool = next((t for t in self._tools if t.name == name), None)
+                    if tool is None:
+                        result = ToolResult(text=f"[未知工具: {name}]")
+                    else:
+                        try:
+                            result = tool.callable(**args)
+                        except Exception as e:
+                            result = ToolResult(text=f"[工具执行失败: {e}]")
+
+                    print(f"  [agent] {name}({str(raw_args)[:60]}{'...' if len(str(raw_args)) > 60 else ''})"
+                          f" → {len(result.text)} chars, {len(result.resources)} resources")
+                    if on_event is not None:
+                        on_event("tool_result", {"name": name,
+                                                 "chars": len(result.text),
+                                                 "resources": len(result.resources)})
+
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": result.text,
+                    })
+                    # 记录 tool 消息所属轮次
+                    self._tool_round_map[tc["id"]] = round_num
+                    # 标记 record_observation 发生在哪一轮
+                    if name == "record_observation" and self._observations:
+                        self._observations[-1].round_num = round_num
+
+            if stream and on_event is not None:
+                on_event("answer_chunk", {"delta": "抱歉，暂时没能找到相关信息，请尝试换一个问法。"})
+            return "抱歉，暂时没能找到相关信息，请尝试换一个问法。"
+        finally:
+            self._flush_observations(question)
+
+    def _flush_observations(self, question: str) -> None:
+        """把本轮产生的观察并入 session 存储（ctx.observations），标记来源提问。"""
+        if not self._observations:
+            return
+        store = getattr(self._ctx, "observations", None)
+        if store is None:
+            return
+        for obs in self._observations:
+            obs.question = question
+        store.extend(self._observations)

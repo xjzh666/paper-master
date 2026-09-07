@@ -1,12 +1,7 @@
 import { Spin, Alert, Typography, Anchor, Empty, Collapse } from 'antd'
 import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import remarkMath from 'remark-math'
-import rehypeKatex from 'rehype-katex'
-import rehypeRaw from 'rehype-raw'
-import rehypeSlug from 'rehype-slug'
-import rehypeMathInHtml from '../markdown/rehypeMathInHtml'
 import GithubSlugger from 'github-slugger'
+import { remarkPlugins, rehypePlugins } from '../markdown/plugins'
 import type { PaperOverview } from '../api/client'
 
 interface Props {
@@ -56,7 +51,7 @@ export default function ReadingPanel({ status, error, overview, markdown }: Prop
         />
       )}
       <div className="markdown-body">
-        <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeSlug, rehypeKatex, rehypeRaw, rehypeMathInHtml]}>
+        <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins}>
           {markdown}
         </ReactMarkdown>
       </div>

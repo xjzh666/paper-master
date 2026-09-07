@@ -9,6 +9,9 @@ from paper_reader.blocks import PaperDocument, ContentBlock, SemanticChunk
 
 CACHE_DIR = Path.home() / ".cache" / "paper-master"
 
+# Heading-only sections (flat parse) extend into following blocks up to this size
+_SECTION_FALLBACK_CHARS = 2000
+
 # Module-level singleton — loaded once, reused across ConversationContext instances
 _embedding_model = None
 
@@ -43,6 +46,8 @@ class ConversationContext:
     def __init__(self, paper: PaperDocument):
         self.paper = paper
         self.history: list[dict] = []
+        self.observations: list = []                 # session 级观察，跨提问累积
+        self.image_descriptions: dict | None = None  # describe_image 缓存（懒加载）
         self._chunk_texts: list[str] = [c.text for c in paper.chunks]
         self._embeddings: np.ndarray | None = None
         self._ensure_embeddings()
@@ -161,6 +166,23 @@ class ConversationContext:
     def _strip_html(text: str) -> str:
         return re.sub(r'<[^>]+>', '', text)
 
+    @staticmethod
+    def _numbering_depth(text: str) -> int | None:
+        """'6' → 1, '6.1' → 2, '3.2.1' → 3; None when not number-led."""
+        m = re.match(r"(\d+(?:\.\d+)*)", text)
+        if m is None:
+            return None
+        return m.group(1).count(".") + 1
+
+    def _heading_level(self, b: ContentBlock) -> int:
+        """Effective heading level: numbering depth when present, else parser level.
+
+        MinerU sometimes assigns one flat level to all section headings; the
+        section numbers then carry the hierarchy (6 < 6.1 < 6.1.1).
+        """
+        depth = self._numbering_depth(self._strip_html(b.text).strip())
+        return depth if depth is not None else b.level
+
     def find_section(self, query: str) -> list[ContentBlock] | None:
         """Find blocks within a section by title or number match."""
         query_lower = self._strip_html(query.strip().lower())
@@ -172,7 +194,7 @@ class ConversationContext:
         for i, b in enumerate(self.paper.blocks):
             if b.level > 0 and query_lower in self._strip_html(b.text.strip().lower()):
                 heading_idx = i
-                heading_level = b.level
+                heading_level = self._heading_level(b)
                 break
 
         if heading_idx is None:
@@ -182,9 +204,20 @@ class ConversationContext:
         result: list[ContentBlock] = []
         for i in range(heading_idx, len(self.paper.blocks)):
             b = self.paper.blocks[i]
-            if i > heading_idx and b.level > 0 and b.level <= heading_level:
+            if i > heading_idx and b.level > 0 and self._heading_level(b) <= heading_level:
                 break
             result.append(b)
+
+        # Flat-parse fallback: a section with no body text before the next
+        # heading usually means levels carry no hierarchy — extend into the
+        # following blocks so the caller still gets content.
+        if not any(b.level == 0 and b.text.strip() for b in result):
+            total = sum(len(b.text) for b in result)
+            for b in self.paper.blocks[heading_idx + len(result):]:
+                if total >= _SECTION_FALLBACK_CHARS:
+                    break
+                result.append(b)
+                total += len(b.text)
 
         return result
 

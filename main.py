@@ -7,6 +7,7 @@ from paper_reader.mineru_parser import MinerUParser
 from paper_reader.llm import load_config, LLMRouter
 from paper_reader.context import ConversationContext
 from paper_reader.memory import extract_memory, load_memory_cache
+from paper_reader.observations import load_observations, save_observations
 from paper_reader.zotero import ZoteroItem, ZoteroLibrary, resolve_zotero_data_dir
 
 
@@ -51,6 +52,7 @@ def handle_question(
         memory=ctx.paper.memory,
     )
     ctx.add_message("assistant", answer)
+    save_observations(ctx.paper.filepath, [o.to_dict() for o in ctx.observations])
     return answer
 
 
@@ -74,6 +76,13 @@ def interactive_loop(paper_path: str) -> None:
 
     ctx = ConversationContext(paper)
     router = LLMRouter(config)
+
+    # 恢复跨提问累积的 session 观察
+    from paper_reader.agent import Observation
+    ctx.observations = [Observation.from_dict(o)
+                        for o in load_observations(paper.filepath)]
+    if ctx.observations:
+        print(f"  [observations] 恢复 {len(ctx.observations)} 条历史发现")
 
     # ── Phase 3: Paper Memory ──
     memory = load_memory_cache(paper)

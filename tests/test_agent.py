@@ -146,6 +146,8 @@ class FakeCtx:
         self.paper.chunks = [chunk]
         self._chunk_texts = [c.text for c in self.paper.chunks]
         self.history = []
+        self.observations = []
+        self.image_descriptions = None
 
     def search_chunks(self, query, top_k=3):
         return [c for c in self.paper.chunks if query.lower() in c.text.lower()][:top_k]
@@ -792,18 +794,18 @@ def test_agent_passes_compacted_messages_to_llm():
 
 
 def test_agent_injects_observations_into_system_prompt():
-    """验证累积的 observations 注入到 system prompt 中。"""
+    """验证累积的 session observations 注入到 system prompt 中。"""
     from paper_reader.agent import PaperAgent, Observation
     ctx = FakeCtx()
+    ctx.observations = [
+        Observation(summary="方法使用强化学习", facts=["PPO算法"], question="方法是什么"),
+        Observation(summary="在ImageNet上验证", facts=["Top-1 85%"]),
+    ]
 
     text_client = FakeTextClient(responses=[
         LLMToolResponse(text="已回答"),
     ])
     agent = PaperAgent(text_client=text_client, vision_client=FakeVisionClient(), ctx=ctx)
-    agent._observations = [
-        Observation(summary="方法使用强化学习", facts=["PPO算法"]),
-        Observation(summary="在ImageNet上验证", facts=["Top-1 85%"]),
-    ]
 
     agent.run(question="总结方法", history=[])
 
@@ -811,6 +813,7 @@ def test_agent_injects_observations_into_system_prompt():
     assert "已知信息" in system_prompt
     assert "强化学习" in system_prompt
     assert "ImageNet" in system_prompt
+    assert "问: 方法是什么" in system_prompt
 
 
 def test_agent_clears_tool_round_map_on_new_run():
@@ -826,3 +829,112 @@ def test_agent_clears_tool_round_map_on_new_run():
 
     agent.run(question="新问题", history=[])
     assert len(agent._tool_round_map) == 0
+
+
+def test_agent_injects_toc_into_system_prompt():
+    ctx = FakeCtx()
+    text_client = FakeTextClient(responses=[LLMToolResponse(text="got it")])
+
+    agent = PaperAgent(text_client=text_client, vision_client=FakeVisionClient(), ctx=ctx)
+    agent.run(question="test", history=[])
+
+    system_prompt = text_client.calls[0]["system_prompt"]
+    assert "论文章节目录" in system_prompt
+    assert "Methods section heading" in system_prompt
+
+
+# ── session observation 持久化 ───────────────────────────────────────────
+
+def test_observation_dict_roundtrip():
+    from paper_reader.agent import Observation
+    obs = Observation(summary="摘要", facts=["f1"], entities=["e1"],
+                      sources=["p1 §1"], question="问题?", round_num=2)
+    assert Observation.from_dict(obs.to_dict()) == obs
+
+
+def test_run_flushes_observations_to_session_store():
+    from paper_reader.agent import PaperAgent
+    ctx = FakeCtx()
+    text_client = FakeTextClient(responses=[
+        LLMToolResponse(tool_calls=[{
+            "id": "call_1",
+            "name": "record_observation",
+            "arguments": '{"summary":"训练用了8张GPU","sources":["p5 §5.2"]}',
+        }]),
+        LLMToolResponse(text="已回答"),
+    ])
+    agent = PaperAgent(text_client=text_client, vision_client=FakeVisionClient(), ctx=ctx)
+    agent.run(question="训练硬件？", history=[])
+
+    assert len(ctx.observations) == 1
+    assert ctx.observations[0].summary == "训练用了8张GPU"
+    assert ctx.observations[0].question == "训练硬件？"
+
+
+def test_second_run_sees_first_run_observations():
+    from paper_reader.agent import PaperAgent
+    ctx = FakeCtx()
+    text_client = FakeTextClient(responses=[
+        LLMToolResponse(tool_calls=[{
+            "id": "call_1", "name": "record_observation",
+            "arguments": '{"summary":"BLEU 28.4 on EN-DE"}',
+        }]),
+        LLMToolResponse(text="第一问答案"),
+        LLMToolResponse(text="第二问答案"),
+    ])
+    agent = PaperAgent(text_client=text_client, vision_client=FakeVisionClient(), ctx=ctx)
+    agent.run(question="结果如何？", history=[])
+    agent.run(question="追问", history=[])
+
+    second_prompt = text_client.calls[2]["system_prompt"]
+    assert "BLEU 28.4" in second_prompt
+    assert "问: 结果如何？" in second_prompt
+    # 不重复 flush
+    assert len(ctx.observations) == 1
+
+
+def test_session_observation_injection_limited_to_recent():
+    from paper_reader.agent import PaperAgent, Observation, SESSION_OBSERVATION_LIMIT
+    ctx = FakeCtx()
+    ctx.observations = [Observation(summary=f"发现{i}") for i in range(25)]
+    text_client = FakeTextClient(responses=[LLMToolResponse(text="ok")])
+    agent = PaperAgent(text_client=text_client, vision_client=FakeVisionClient(), ctx=ctx)
+    agent.run(question="q", history=[])
+
+    prompt = text_client.calls[0]["system_prompt"]
+    assert "发现24" in prompt
+    assert f"发现{25 - SESSION_OBSERVATION_LIMIT}" in prompt
+    assert "发现4" not in prompt  # 最旧的被截掉
+
+
+def test_describe_image_uses_cache_when_available():
+    ctx = FakeCtx()
+    ctx.image_descriptions = {"images/a.png": "缓存的描述"}
+    vision = FakeVisionClient()
+    store = {"img_1": Resource(type="image", id="img_1",
+                               path="/tmp/test_result/images/a.png", caption="Fig 1")}
+    tools = _make_tools(ctx, vision, store, [])
+    desc_fn = next(t for t in tools if t.name == "describe_image").callable
+
+    result = desc_fn(resource_id="img_1")
+    assert result.text == "缓存的描述"
+    assert len(vision.calls) == 0
+
+
+def test_describe_image_caches_api_result():
+    ctx = FakeCtx()
+    ctx.image_descriptions = {}
+    vision = FakeVisionClient()
+    res = Resource(type="image", id="img_1",
+                   path="/tmp/test_result/images/a.png", caption="Fig 1")
+    res.load_data = lambda: b"fake_image_data"
+    store = {"img_1": res}
+    tools = _make_tools(ctx, vision, store, [])
+    desc_fn = next(t for t in tools if t.name == "describe_image").callable
+
+    result = desc_fn(resource_id="img_1")
+    assert "图片描述" in result.text
+    assert ctx.image_descriptions["images/a.png"] == result.text
+    # 第二次调用走缓存，不再调 vision API
+    assert desc_fn(resource_id="img_1").text == result.text
+    assert len(vision.calls) == 1

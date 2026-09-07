@@ -27,30 +27,36 @@ GitHub: https://github.com/xjzh666/paper-master
 main.py                  # CLI 入口，交互循环 + 批量解析
 paper_reader/
   ├── blocks.py          # 数据模型（ContentBlock / SemanticChunk / PaperMemory / PaperDocument）
-  ├── agent.py           # Agent 循环 + 工具定义 + 压缩 + Observation Memory + 流式 run_stream()
+  ├── agent.py           # Agent 循环 + 工具定义 + 压缩 + Session Observation（跨提问累积+落盘）+ 流式 run_stream()
   ├── mineru_parser.py   # MinerU 解析器 + sha256 缓存
   ├── memory.py          # Paper Memory 抽取 + 缓存读写
+  ├── observations.py    # Session Observation + 图像描述缓存读写（{sha}-observations.json / {sha}-images.json）
   ├── parser.py          # PyMuPDF 解析器（旧，保留不用）
   ├── llm.py             # LLM 客户端 + 路由 + 配置加载
   ├── context.py         # 对话上下文 + BGE-M3 向量检索 + 窗口构建
   ├── zotero.py          # Zotero 只读数据层（collections/items/search/get_item/resolve_pdf）
-  ├── papers.py          # Web 会话仓库：Session 管理 + 异步 MinerU 解析 + chat_events SSE 事件源
+  ├── papers.py          # Web 会话仓库：Session 管理 + 异步 MinerU 解析 + 后台 Paper Memory 抽取 + 会话历史/观察落盘与恢复 + chat_events SSE 事件源
   ├── latex_fix.py       # OCR 公式 LaTeX 语义规范化（HTML→上下标、字母间距、上下标嵌套、\dots、\operatorname、标识符 \mathrm 包装），serve-time 应用
   ├── math_quality.py    # 数学质量层：公式覆盖率统计 + OCR/编码异常检测 + prose OCR 规范化 + Unicode 数学字符/污染检测（含 CLI）
   └── server.py          # FastAPI：/api/zotero/* + /api/papers/* 接口 + 前端静态托管（mount("/")）
+docs/
+  ├── architecture.md    # 架构文档
+  ├── specs/             # 功能 spec 存档（docs/specs/YYYY-MM-DD-<slug>.md）
+  └── superpowers/specs/ # 设计 spec 存档（同源格式，如 2026-09-01-session-observation-design.md）
 frontend/                # Web 前端（React + TypeScript + Ant Design + Vite）
   ├── src/               # App 三栏：论文列表 / markdown 阅读区 / SSE 对话区 + api client
-  │   ├── markdown/      # rehypeMathInHtml 插件：渲染原生 HTML table 内的 $..$（remark-math 看不到的部分）
-  │   │                  # 阅读区：react-markdown + remark-math/rehype-katex（公式）+ rehype-raw（HTML 表格/sub/sup）+ rehypeMathInHtml + github-markdown-css
+  │   ├── markdown/      # plugins.ts 共享 remark/rehype 插件栈（阅读区 + 对话区共用）
+  │   │                  # rehypeMathInHtml 插件：渲染原生 HTML table 内的 $..$（remark-math 看不到的部分）
+  │   │                  # 渲染栈：react-markdown + remark-math/rehype-katex（公式）+ rehype-raw（HTML 表格/sub/sup）+ rehypeMathInHtml + github-markdown-css
+  │   │                  # 对话区：助手消息同样走该渲染栈（memo 化，流式增量重渲染仅最后一条）
   │   └── ...
   ├── scripts/           # math-coverage.mjs：公式覆盖率校验（raw → remark-math → raw-HTML → KaTeX 渲染计数）
   └── dist/              # 构建产物（npm run build 输出，server.py 静态托管）
-tests/                   # 225 个 Python 测试 + 12 个前端 vitest，全过
+tests/                   # 256 个 Python 测试 + 17 个前端 vitest，全过
 config.example.yaml      # 配置模板（提交）
 config.yaml              # 实际配置（gitignore）
 .venv/                   # 虚拟环境（gitignore）
 papers/                  # 测试用 PDF 论文（gitignore）
-launch.bat               # Windows 双击启动脚本（已废弃，改用 paper-web 命令）
 ```
 
 ### 当前数据流（Agent + 工具模式，已实现）
@@ -68,13 +74,15 @@ PDF → MinerU CLI (VLM 版面分析) → content_list_v2.json + images/ + .md
 ```
 用户提问
   → PaperAgent.run()
+  → system prompt 注入：Paper Memory + [论文章节目录] + session 观察（最近 20 条，带来源提问标记）
   → 每轮发送前 _compact_messages() 压缩往轮 tool result
   → LLM 决策调用工具（最多 7 轮）:
       ├── search_paper(query)     — BGE-M3 混合检索 + aliases 精确匹配
-      ├── get_section(reference)  — 章节精确引用，3000 字截断
-      ├── describe_image(rid)     — VLM 图片内容解析
-      └── record_observation(...) — 结构化记录本轮发现（summary + facts + entities + sources）
+      ├── get_section(reference)  — 章节精确引用（编号深度有效层级 + 平层级兜底），3000 字截断
+      ├── describe_image(rid)     — VLM 图片内容解析（描述按图片路径缓存 {sha}-images.json，命中不调 API）
+      └── record_observation(...) — 结构化记录发现（summary + facts + entities + sources；与当前问题无关但有价值的也记）
   → 往轮 tool result 替换为 observation 摘要（无 observation 则智能截断降级）
+  → run 结束 flush 本轮观察到 ctx.observations（打 question 标记），落盘 {sha}-observations.json
   → 中文回答
 ```
 
@@ -88,6 +96,7 @@ PDF → MinerU CLI (VLM 版面分析) → content_list_v2.json + images/ + .md
        ├─ 有缓存 → 直接 ready；无缓存 → 后台线程异步 MinerU 解析（不阻塞）
        └─ 前端轮询 /api/papers/{id}/status 直到 ready
   → GET /api/papers/{id}/overview|content|images/*  — 摘要 / markdown 阅读区 / 图片
+  → GET|DELETE /api/papers/{id}/history  — 对话历史读取（前端打开论文自动恢复 + 分割线）/ 清空（联动清 session 观察）
   → POST /api/papers/{id}/chat     — SSE 对话（StreamingResponse）
        → papers.chat_events() 在 worker 线程驱动 PaperAgent.run_stream()
        → 队列转发 on_event → SSE 帧：event: <etype>\ndata: <json>\n\n
@@ -104,7 +113,9 @@ PDF → MinerU CLI (VLM 版面分析) → content_list_v2.json + images/ + .md
 | `done` | `{}` | 本轮结束 |
 | `error` | `{message}` | 出错（如 paper not parsed） |
 
-> Web 首次解析后**不**做 Paper Memory 抽取（仅加载缓存 `{sha256}-memory.json`），CLI 会抽取；记忆缺失时 agent 正常降级。留待后续加后台抽取。
+> Web 端 Paper Memory：`open_paper` 两条路径（缓存命中 / 首次解析）都会先 `load_memory_cache` 加载 `{sha256}-memory.json`；仍缺失时由 `_ensure_memory_background` 起后台线程调 `extract_memory` 抽取（不阻塞 ready 状态），失败静默降级为纯 RAG。`memory_jobs` 集合防同论文重复抽取。
+>
+> Web 端对话历史持久化：`load_chat_history` / `save_chat_history` 读写 `~/.cache/paper-master/{paper_id}-history.json`（`paper_id` 即 PDF sha256）。`open_paper` 创建 Session 时经 `_restore_session_state` 与 session 观察（`{paper_id}-observations.json`）一并加载，`chat_events` 回答完成后两者一起落盘（出错不保存，磁盘保留最近一次成功状态）；损坏文件静默加载为空。`GET /api/papers/{id}/history`（内存 session 优先、磁盘兜底）供前端打开论文时自动恢复，`DELETE` 清空并联动删 observations（图像描述 `{paper_id}-images.json` 是论文级产物，不清）。重启 uvicorn 后对话与检索发现均可恢复。
 
 ### 数据模型
 
@@ -129,8 +140,9 @@ PaperDocument
 
 **Agent 层（agent.py）：**
 ```
-Observation           — 每轮检索后的结构化观察（L2 记忆）
-  summary, round_num, facts, entities, sources
+Observation           — 每轮检索后的结构化观察（L2 记忆，session 级落盘）
+  summary, round_num, facts, entities, sources, question（来源提问）
+  per-run 列表供压缩；run 结束 flush 到 ctx.observations，落盘 {sha}-observations.json
 
 Resource              — 工具返回的图片/表格引用，懒加载
 ToolResult            — 工具返回 {text, resources}
@@ -171,7 +183,13 @@ LLMToolResponse       — LLM 返回解析 {text, tool_calls}
   - [x] **HTML table 内公式渲染（`rehypeMathInHtml.ts`）** — 修复 remark-math 看不到原生 `<table>` 内 `$..$` 的问题，挂在 rehypeRaw 之后用 KaTeX 渲染
   - [x] **公式覆盖率校验（`math-coverage.mjs`）** — raw → remark-math → raw-HTML → KaTeX 计数 + Lost candidates；5 篇真实论文 594→594，Lost=0
   - [x] **OCR/编码异常检测与 prose 规范化（`math_quality.py`）** — `\ufffd` 检测+移除、Ḋ/Ḍ 点号重音检测 + prose-only 规范化（不改 math block）、Unicode 数学字符检测（σ/∈/≤→…）、Markdown/LaTeX 污染检测（未闭合 `$`/`\(`/`\[`、`\_` 转义、`\text{}` 内错误数学）
-  - [x] 测试：225 个 Python + 12 个前端 vitest 全过
+  - [x] 测试：231 个 Python + 17 个前端 vitest 全过
+- [x] **Web 后台 Paper Memory 抽取** — `papers.open_paper` 缓存命中路径补上 `load_memory_cache`（此前只有解析路径加载，已有记忆的论文会被白白重抽）；记忆仍缺失时 `_ensure_memory_background` 后台线程抽取，不阻塞 ready，失败静默降级，`memory_jobs` 防重
+- [x] **对话面板 markdown+公式渲染** — 助手消息从纯文本改为 `MarkdownMessage`（memo 化的 react-markdown），复用与阅读区一致的插件栈（公式/HTML 表格/列表）；新增 `frontend/src/markdown/plugins.ts` 共享插件配置，`plugins.test.tsx` 锁住渲染行为；流式输出按"增量 buffer + 全量重渲染最后一条"处理，未闭合 `$$`/代码块在中间态按普通文本显示、闭合后自动成型
+- [x] **对话历史落盘持久化** — `papers.py` 新增 `load_chat_history` / `save_chat_history`（`~/.cache/paper-master/{paper_id}-history.json`），`open_paper` 创建 Session 时加载、`chat_events` 回答完成后保存；损坏文件静默加载为空，出错不落盘（保留最近成功状态）。重启后端对话可恢复
+- [x] **对话历史前端恢复 + 清空** — `GET /api/papers/{id}/history`（内存 session 优先，磁盘兜底）+ `DELETE` 清空；ChatPanel 打开论文自动拉取历史恢复展示（历史与本轮新消息间插「以上是历史对话」分割线），标题栏「清空」按钮联动清磁盘 history 与 session 观察；顺带修复换论文旧对话残留
+- [x] **get_section 平层级修复 + 章节目录注入** — MinerU 把父子节标题全标成同一层级时，`find_section` 用编号深度（6 < 6.1 < 6.1.1）算有效层级，父章节正确收编子节正文；heading-only 结果兜底顺延后续块（2000 字上限）；system prompt 注入 `[论文章节目录]` 并要求 reference 从目录选取，杜绝瞎猜章节名
+- [x] **Session Observation 跨提问 + 中间产物落盘** — observations 所有权上移到 `ConversationContext`（每问新建 agent 也跨提问累积），run 结束 finally flush 并打 question 标记；落盘 `{sha}-observations.json`（全量不去重），注入最近 20 条带「未经复核」标注；`describe_image` 结果按图片相对路径缓存 `{sha}-images.json`（命中不调 vision API）；记录标准放宽为"有独立价值即使与当次问题无关也记 + sources 必填"；清空对话联动清观察（图像描述不清）；CLI 端同样恢复/保存
 
 ## 进行中
 
@@ -208,7 +226,7 @@ LLMToolResponse       — LLM 返回解析 {text, tool_calls}
 - [x] `record_observation` 工具 — LLM 同一轮内顺手记录，不增加额外 API 调用
 - [x] 降级策略：LLM 不调 record_observation 时自动回退截断
 - [x] Observation 注入 system prompt — 累积的观察作为"已知信息"注入
-- [x] 每次 `run()` 调用重置 `_tool_round_map` 和 `_observations`，跨对话不污染
+- [x] 每次 `run()` 重置 per-run `_tool_round_map` 和 `_observations`（压缩匹配只限本轮）；session 观察存 `ctx.observations`，跨提问累积并落盘
 - [x] `round_num` 字段解决 observation-to-round 的索引映射问题
 - [x] **off-by-one 修复**：压缩阈值 `round_num < current_round - KEEP_RECENT_ROUNDS`，保证工具结果第一次被模型读到前完整保留（此前早压一轮导致模型永远读不到完整结果，陷入无限检索）
 - [x] **检索瘦身**：chunk 阈值 480→240 tokens（约 960 字），`search_paper` window=1→0，返回量从 13-16K 降到 3-5K
@@ -254,7 +272,7 @@ LLMToolResponse       — LLM 返回解析 {text, tool_calls}
 ## 用户当前配置
 
 用户使用两个不同的模型（config.yaml）:
-- text: deepseek-v4-flash @ api.deepseek.com
+- text: glm-5.3-flash @ 智谱 open.bigmodel.cn — **GLM Coding Plan 套餐**，base_url 必须用 Coding Plan 专用端点 `https://open.bigmodel.cn/api/coding/paas/v4`；通用端点 `/api/paas/v4` 只扣普通余额，会报 429 code 1113「余额不足或无可用资源包」。Coding Plan 也有 Anthropic 协议端点（`/api/anthropic`），但项目 AnthropicClient 尚不支持 base_url 与工具调用，未走此路径
 - vision: qwen3.5-plus @ dashscope.aliyuncs.com
 
 两者都用 OpenAI 兼容格式（provider: openai）。
@@ -266,16 +284,18 @@ LLMToolResponse       — LLM 返回解析 {text, tool_calls}
 3. **RAG 定位**：RAG 应作为 Agent 可调用的工具，而非整个系统的核心流程。Agent 决定什么时候需要检索，不强制每轮走 RAG
 4. **路由规则**：检索窗口中包含图片/表格 → vision 模型；纯文字 → text 模型。路由日志 `[路由: vision/text]` 开箱可见。未来 Query Router 将区分定位/理解/比较三类问题
 5. **系统提示词**：两个模型共用一个 SYSTEM_PROMPT。工具调用参数用英文（论文是英文，检索匹配更好），最终回答用中文
-6. **缓存策略**：PDF 内容 sha256 → `~/.cache/paper-master/{hash}.json`（含 blocks + chunks + embeddings + lexical_weights + aliases）+ `{hash}-memory.json`（Paper Memory，独立文件用于生命周期解耦）。MinerU 原始输出留在 `~/.cache/paper-master/mineru-output/`（持久化，不自动清理）。batch 分三阶段（MinerU 解析 → BGE-M3 编码 → Memory 抽取）
+6. **缓存策略**：PDF 内容 sha256 → `~/.cache/paper-master/{hash}.json`（含 blocks + chunks + embeddings + lexical_weights + aliases）+ `{hash}-memory.json`（Paper Memory，独立文件用于生命周期解耦）+ `{hash}-history.json`（对话历史）+ `{hash}-observations.json`（session 观察，随 history 清空）+ `{hash}-images.json`（图像描述，论文级不清）。MinerU 原始输出留在 `~/.cache/paper-master/mineru-output/`（持久化，不自动清理）。batch 分三阶段（MinerU 解析 → BGE-M3 编码 → Memory 抽取）
 7. **图片加载**：ContentBlock.image_bytes 懒加载，仅 LLM 需要时才读文件
 8. **暂不引入 LangChain/LangGraph**：当前是简单流水线。后续 Agent 框架再评估，在此之前的工具化用纯函数接口
 9. **旧 parser.py 保留不动**，mineru_parser.py 是主要解析路径
 10. **Paper Memory**：论文理解不止依赖 chunk embedding，LLM 一次性抽取 10 个结构化字段（研究问题、动机、方法、实验、局限、关键词等），存入独立缓存。当前单论文直接注入 system prompt，后续多论文时改造为 Agent 工具按需调用。关键词留作多论文路由筛选
 11. **Tool Result 压缩**：不增加额外 API 调用，利用 LLM 同一轮的多工具调用能力（record_observation + search_paper 在同一个 tool_calls 里发出）。保留最近 `KEEP_RECENT_ROUNDS=3` 轮完整（保证模型能回读证据，避免"证据被压后反复重搜"），更早的替换为 observation 摘要，无 observation 时降级为智能截断。压缩阈值必须严格保证"工具结果在第一次被模型读到前完整"（曾有 off-by-one bug）
-12. **三层记忆架构**：L1 Conversation Memory（messages，最新轮完整，往轮压缩）、L2 Observation Memory（结构化观察，`self._observations`，注入 system prompt）、L3 Evidence Memory（来源追溯，Observation.sources 字段已就绪，P3 完善）
+12. **三层记忆架构**：L1 Conversation Memory（messages，最新轮完整，往轮压缩）、L2 Observation Memory（结构化观察，session 级存 `ctx.observations` 并落盘，注入最近 20 条）、L3 Evidence Memory（来源追溯，Observation.sources 字段已就绪，P3 完善）
 13. **桌面形态从 Tauri 改为 Web 应用**：早期定 Tauri，后改为纯 Web 应用（React+Vite 前端 + FastAPI 单端口静态托管 + `paper-web` 命令一键启动）。理由：GPU 与 Zotero 数据都在 WSL2，浏览器天然跨 Windows/WSL 边界（无需 WSLg）；免装 Rust 工具链；单端口部署简单。代价：无系统托盘/原生窗口，但当前功能（读 PDF + 对话）浏览器足够。启动命令 `paper-web` 是 `~/.local/bin/paper-web` 脚本（激活 venv + 拉起 uvicorn + 开浏览器），旧 `launch.bat` 双击方案已废弃
 14. **静态托管挂在 `/`**：`server.py` 的 `create_app(data_dir=None, frontend_dist=None)` 在**所有 API 路由之后** `mount("/", StaticFiles(html=True))`（默认指向 `frontend/dist`）。FastAPI 按注册顺序匹配，API 路由优先，前端 SPA 兜底。`frontend_dist` 可显式传入（测试用临时目录），dist 不存在时静默跳过（纯 API 模式不受影响）
 15. **`paper-web` 一键启动 + 两个启动前置**：启动命令是 `~/.local/bin/paper-web` bash 脚本（`cd` 项目 + `source .venv/bin/activate` + 后台 `explorer.exe` 开浏览器 + `exec uvicorn`），任意目录可敲、无参数。两个易踩的坑：① **前端 `npm run build` 是首次启动前置**——`frontend/dist/` 不存在时 server.py 静默跳过静态托管，根路径 `/` 返回 404（需构建后重启后端才生效）；② **Zotero sqlite 连接必须 `check_same_thread=False`**——`get_library` 是带 yield 的同步依赖，FastAPI 线程池里创建连接与执行查询在不同线程，默认 `check_same_thread=True` 会报 `SQLite objects created in a thread can only be used in that same thread`；只读连接（`mode=ro`）+ `sqlite3.threadsafety=1`（serialized）下关掉检查是安全的。旧 `launch.bat`（需 CRLF + 纯 ASCII）已废弃
+16. **中间产物落盘原则：可重建的不存，不可重建的才存**（2026-09-01）— `search_paper`/`get_section` 的检索原文不落盘（chunk 索引本身就是持久化 + 检索层，BGE-M3 本地重查免费）；只落盘模型产物：session observations（跨提问证据链，`{sha}-observations.json` 全量 append 不去重，prompt 只注入最近 20 条）和 `describe_image` 图像描述（`{sha}-images.json`，论文级，key 用图片相对路径——resource id 尾号是当次枚举序号，跨调用不稳定）。观察注入带「未经复核」标注，定位为线索而非事实；记录标准是"有独立价值的事实即使与当次问题无关也记"，sources 必填。observations 与 history 同生同灭，图像描述独立存在。spec: `docs/superpowers/specs/2026-09-01-session-observation-design.md`
+17. **章节层级以编号深度为准**：MinerU 可能把父子节标题标成同一 level（如全部 level 2），`find_section` 因此用编号深度（`6` < `6.1` < `6.1.1`）计算有效层级，无编号标题退回 parser level；heading-only 的匹配结果兜底顺延后续块（2000 字上限）。注意 `merge_blocks` 的 `section_path` 仍按原始 level 截断（平层级解析下路径也是平的），目前无读取方，暂未修
 
 ## 常用命令
 
@@ -293,8 +313,8 @@ paper-web                              # 一键启动 Web 版（激活 venv + �
 cd frontend && npm run dev              # 前端开发模式（Vite HMR，需后端已起）
 cd frontend && npm run build            # 构建前端到 dist/（server.py 静态托管）
 
-python3 -m pytest tests/ -v                   # Python 测试 (225)
-cd frontend && npx vitest run                 # 前端 vitest (12)
+python3 -m pytest tests/ -v                   # Python 测试 (256)
+cd frontend && npx vitest run                 # 前端 vitest (17)
 python3 -m paper_reader.math_quality paper.md        # 数学质量分析（OCR/编码/污染）
 python3 -m paper_reader.math_quality paper.md --fix out.md  # 输出清洗后的 md
 cd frontend && node scripts/math-coverage.mjs out.md      # 公式覆盖率校验

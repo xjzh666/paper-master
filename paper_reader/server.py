@@ -95,6 +95,15 @@ def create_app(data_dir: Path | None = None,
         except KeyError:
             raise HTTPException(status_code=404, detail="paper not parsed")
 
+    @app.get("/api/papers/{paper_id}/history")
+    def paper_history(paper_id: str):
+        return {"messages": papers.get_chat_history(paper_id)}
+
+    @app.delete("/api/papers/{paper_id}/history")
+    def paper_history_clear(paper_id: str):
+        papers.clear_chat_history(paper_id)
+        return {"ok": True}
+
     @app.get("/api/papers/{paper_id}/images/{relpath:path}")
     def paper_image(paper_id: str, relpath: str):
         p = papers.get_image_path(paper_id, relpath)

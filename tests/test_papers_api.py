@@ -124,3 +124,58 @@ def test_chat_endpoint_streams_sse(zotero_db, tmp_path, monkeypatch):
     assert "event: tool_start" in res.text
     assert "event: answer_chunk" in res.text
     assert "event: done" in res.text
+
+
+def test_history_endpoints_get_and_delete(zotero_db, tmp_path, monkeypatch):
+    key = _seed_cached_paper(zotero_db, tmp_path, monkeypatch)
+    cache_dir = tmp_path / "cache"
+    paper = PaperDocument(filepath="/tmp/x", title="Honeypot Evolution",
+                          abstract="", result_dir=str(tmp_path / "result"),
+                          blocks=[], chunks=[])
+    session = papers.Session(paper)
+    session.ctx.add_message("user", "问题")
+    session.ctx.add_message("assistant", "答案")
+    papers.sessions[key] = session
+    papers.save_chat_history(key, session.ctx.history)
+
+    app = create_app(zotero_db)
+    with TestClient(app) as client:
+        res = client.get(f"/api/papers/{key}/history")
+        assert res.status_code == 200
+        assert [m["role"] for m in res.json()["messages"]] == ["user", "assistant"]
+        res = client.delete(f"/api/papers/{key}/history")
+        assert res.status_code == 200
+        res = client.get(f"/api/papers/{key}/history")
+        assert res.json()["messages"] == []
+    assert not (cache_dir / f"{key}-history.json").exists()
+
+
+def test_history_endpoint_unknown_paper_returns_empty(zotero_db, tmp_path, monkeypatch):
+    _seed_cached_paper(zotero_db, tmp_path, monkeypatch)
+    app = create_app(zotero_db)
+    with TestClient(app) as client:
+        res = client.get("/api/papers/unknown/history")
+    assert res.status_code == 200
+    assert res.json()["messages"] == []
+
+
+def test_delete_history_also_clears_observations(zotero_db, tmp_path, monkeypatch):
+    key = _seed_cached_paper(zotero_db, tmp_path, monkeypatch)
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setattr("paper_reader.observations.CACHE_DIR", cache_dir)
+    from paper_reader.agent import Observation
+    pdf_path = zotero_db / "storage" / "ATT11" / "Honeypot Evolution.pdf"
+    session = papers.Session(PaperDocument(filepath=str(pdf_path), title="t",
+                                           blocks=[], chunks=[]))
+    session.ctx.observations.append(Observation(summary="发现", question="q"))
+    papers.sessions[key] = session
+    papers.save_observations(str(pdf_path),
+                             [o.to_dict() for o in session.ctx.observations])
+    assert (cache_dir / f"{key}-observations.json").exists()
+
+    app = create_app(zotero_db)
+    with TestClient(app) as client:
+        res = client.delete(f"/api/papers/{key}/history")
+    assert res.status_code == 200
+    assert session.ctx.observations == []
+    assert not (cache_dir / f"{key}-observations.json").exists()
