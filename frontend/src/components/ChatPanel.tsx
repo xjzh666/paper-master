@@ -1,5 +1,5 @@
 import { Fragment, memo, useEffect, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import { Button, Divider, Input, List, Typography, Collapse, Tag, Empty, Space } from 'antd'
 import { postChatSSE } from '../api/sse'
 import { api, type ChatMessage } from '../api/client'
@@ -8,6 +8,7 @@ import { remarkPlugins, rehypePlugins } from '../markdown/plugins'
 interface Props {
   paperId: string | null
   disabled: boolean
+  onCite?: (chunkId: string) => void
 }
 
 interface ToolLog {
@@ -16,17 +17,24 @@ interface ToolLog {
   chars: number
 }
 
+/** react-markdown 默认 urlTransform 会滤掉非白名单 scheme（cite: → ''），这里放行 cite: */
+const citeUrlTransform = (url: string) => (url.startsWith('cite:') ? url : defaultUrlTransform(url))
+
 const MarkdownMessage = memo(function MarkdownMessage({ content }: { content: string }) {
   return (
     <div className="markdown-body" style={{ fontSize: 14 }}>
-      <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins}>
+      <ReactMarkdown
+        remarkPlugins={remarkPlugins}
+        rehypePlugins={rehypePlugins}
+        urlTransform={citeUrlTransform}
+      >
         {content}
       </ReactMarkdown>
     </div>
   )
 })
 
-export default function ChatPanel({ paperId, disabled }: Props) {
+export default function ChatPanel({ paperId, disabled, onCite }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [historyCount, setHistoryCount] = useState(0)
   const [toolLog, setToolLog] = useState<ToolLog[]>([])
@@ -104,6 +112,14 @@ export default function ChatPanel({ paperId, disabled }: Props) {
     }
   }
 
+  /** 事件委托：拦截消息区内 cite: 链接点击，preventDefault 并回调 onCite(chunkId) */
+  const handleMessagesClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const anchor = (e.target as HTMLElement).closest('a[href^="cite:"]')
+    if (!anchor) return
+    e.preventDefault()
+    onCite?.(anchor.getAttribute('href')!.slice('cite:'.length))
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -140,7 +156,7 @@ export default function ChatPanel({ paperId, disabled }: Props) {
           }]}
         />
       )}
-      <div style={{ flex: 1, overflow: 'auto', margin: '8px 0' }}>
+      <div style={{ flex: 1, overflow: 'auto', margin: '8px 0' }} onClick={handleMessagesClick}>
         {messages.length === 0 ? (
           <Empty description="选一篇论文，开始提问" />
         ) : (

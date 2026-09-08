@@ -1,12 +1,18 @@
 import { useState, useRef } from 'react'
-import { Layout } from 'antd'
+import { Layout, message } from 'antd'
 import PaperListSidebar from './components/PaperListSidebar'
 import ChatPanel from './components/ChatPanel'
 import ReadingPanel from './components/ReadingPanel'
 import { api } from './api/client'
-import type { PaperOverview, ZoteroItem } from './api/client'
+import type { PaperOverview, ZoteroItem, ChunkIndexEntry } from './api/client'
 
 const { Sider, Content } = Layout
+
+/** 一次性引用点击事件：seq 递增保证重复点击同一 chunk 也重触发（消费方不重放） */
+interface CiteTarget {
+  chunkId: string
+  seq: number
+}
 
 export default function App() {
   const [paperId, setPaperId] = useState<string | null>(null)
@@ -14,15 +20,24 @@ export default function App() {
   const [error, setError] = useState('')
   const [overview, setOverview] = useState<PaperOverview | null>(null)
   const [markdown, setMarkdown] = useState('')
+  const [chunkIndex, setChunkIndex] = useState<ChunkIndexEntry[] | null>(null)
+  // Task 6（ReadingPanel 定位高亮）将消费 citeTarget
+  const [citeTarget, setCiteTarget] = useState<CiteTarget | null>(null)
   const pollRef = useRef<number | null>(null)
   const paperIdRef = useRef<string | null>(null)
+  const citeSeqRef = useRef(0)
 
   const loadReady = async (pid: string) => {
     if (paperIdRef.current !== pid) return
-    const [ov, ct] = await Promise.all([api.overview(pid), api.content(pid)])
+    const [ov, ct, ci] = await Promise.all([
+      api.overview(pid),
+      api.content(pid),
+      api.chunksIndex(pid).catch(() => null), // 索引拉取失败降级为「未就绪」，不阻塞论文加载
+    ])
     if (paperIdRef.current !== pid) return
     setOverview(ov)
     setMarkdown(ct.markdown)
+    setChunkIndex(ci ? ci.chunks : null)
     setStatus('ready')
   }
 
@@ -32,6 +47,8 @@ export default function App() {
     setOverview(null)
     setMarkdown('')
     setError('')
+    setChunkIndex(null)
+    setCiteTarget(null)
     setStatus('parsing')
     try {
       const res = await api.openPaper(item.item_id)
@@ -72,13 +89,22 @@ export default function App() {
     }, 2000)
   }
 
+  const handleCite = (chunkId: string) => {
+    if (!chunkIndex) {
+      message.info('原文索引尚未就绪')
+      return
+    }
+    citeSeqRef.current += 1
+    setCiteTarget({ chunkId, seq: citeSeqRef.current })
+  }
+
   return (
     <Layout style={{ height: '100vh' }}>
       <Sider width={320} theme="light" style={{ borderRight: '1px solid #eee', overflow: 'auto' }}>
         <PaperListSidebar onOpen={openPaper} />
       </Sider>
       <Content style={{ padding: 16, borderRight: '1px solid #eee' }}>
-        <ChatPanel paperId={paperId} disabled={status !== 'ready'} />
+        <ChatPanel paperId={paperId} disabled={status !== 'ready'} onCite={handleCite} />
       </Content>
       <Sider width={560} theme="light" style={{ padding: 16, overflow: 'auto' }}>
         <ReadingPanel status={status} error={error} overview={overview} markdown={markdown} />

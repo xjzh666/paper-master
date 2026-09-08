@@ -38,6 +38,13 @@ export interface ParseStatus {
   message?: string
 }
 
+export interface ChunkIndexEntry {
+  id: string
+  page: number
+  section: string
+  snippets: string[]
+}
+
 async function get<T>(url: string): Promise<T> {
   const res = await fetch(url)
   if (!res.ok) throw new Error(`GET ${url} → ${res.status}`)
@@ -59,6 +66,8 @@ export const api = {
   paperStatus: (paperId: string) => get<ParseStatus>(`/api/papers/${paperId}/status`),
   overview: (paperId: string) => get<PaperOverview>(`/api/papers/${paperId}/overview`),
   content: (paperId: string) => get<{ markdown: string }>(`/api/papers/${paperId}/content`),
+  chunksIndex: (paperId: string) =>
+    get<{ chunks: ChunkIndexEntry[] }>(`/api/papers/${paperId}/chunks-index`),
   history: (paperId: string) =>
     get<{ messages: ChatMessage[] }>(`/api/papers/${paperId}/history`),
   clearHistory: (paperId: string) =>
