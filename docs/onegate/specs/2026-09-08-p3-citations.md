@@ -1,6 +1,8 @@
 # P3 引用溯源 spec：回答引用可点击 + 阅读区滚动高亮
 
-（2026-09-08 经 onegate 流程批准；执行期间本文件是唯一权威源，偏差记台账不直接改）
+> 状态：已完成 2026-09-08。分支 feature/p3-citations 保留待合并（提交 aea3cc9..c8582f5，277 pytest + 39 vitest 全过，终审可合并）。用户选择暂不合并。
+
+（2026-09-08 经 onegate 流程批准；执行期间本文件是唯一权威源，偏差记台账，收尾折入本节末尾）
 
 ## 目标
 
@@ -56,3 +58,16 @@
 ## 执行默认
 
 当前分支 feature/p3-citations 直接执行（不开 worktree）；每任务一次提交；永不 push/merge（finishing 阶段用户决定）。
+
+## 执行结果与裁决（收尾折入）
+
+实现映射：任务 1 检索标签（agent.py `_chunk_src_label`/`_group_blocks_by_chunk`/`_labeled_chunks_text`，f23df38）；任务 2 引用协议（SYSTEM_PROMPT + record_observation 描述，cc818f4）；任务 3 端点（papers.py `get_chunks_index` + server.py，eeb5357）；任务 4+5 前端链路（client.ts `chunksIndex`/`ChunkIndexEntry`、ChatPanel `citeUrlTransform`+`onCite`、App `chunkIndex`/`citeTarget{chunkId,seq}`，7cdd007）；任务 6 定位高亮（frontend/src/citation.ts `normalizeKey`/`elementKeyText`/`locateCiteTargets` + ReadingPanel props + cite-highlight.css，3fc1bc8）；任务 7 合同测试 + 文档（c8582f5）。
+
+与 spec 字面的偏差（均为评审/控制者裁决接受）：
+- search_paper 返回文本按**检索顺序**组装（spec 未明说顺序；真实 build_context 按 paper 序 sorted，实现丢弃其文本）
+- record_observation **顶层** description 例值同步改为 chunk 格式（第三处文本改动，避免与参数级示例矛盾）
+- chunks-index 对零 blocks 退化 chunk 用 `min(default=0)` 防护（page=1）；归一化后为空的 snippet 按未命中跳过（防 `includes('')` 恒真误高亮）；同深度多命中取文档序第一个
+- App 拉取 chunks-index 失败降级为"未就绪"（catch → null），不阻塞论文加载
+
+终审遗留（合并后处理）：prompt 断言加"可见"子串收紧；合同测试补磁盘 {paper_id}-history.json 断言；未配对 `$` 误剥 snippet 文本（可复用 math_quality 检测）；citation.ts 候选 key memoize（O(snippets×candidates)）。
+终审建议：合并后用真实论文手动冒烟一次（提问→点击引用→阅读区高亮）——`.md` 渲染文本与 block.text 的对应性无自动化覆盖。
