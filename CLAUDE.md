@@ -35,7 +35,7 @@ paper_reader/
   ├── llm.py             # LLM 客户端 + 路由 + 配置加载
   ├── context.py         # 对话上下文 + BGE-M3 向量检索 + 窗口构建
   ├── zotero.py          # Zotero 只读数据层（collections/items/search/get_item/resolve_pdf）
-  ├── papers.py          # Web 会话仓库：Session 管理 + 异步 MinerU 解析 + 后台 Paper Memory 抽取 + 会话历史/观察落盘与恢复 + chat_events SSE 事件源
+  ├── papers.py          # Web 会话仓库：Session 管理 + 异步 MinerU 解析 + 后台 Paper Memory 抽取 + 会话历史/观察落盘与恢复 + chat_events SSE 事件源 + chunks-index 定位索引
   ├── latex_fix.py       # OCR 公式 LaTeX 语义规范化（HTML→上下标、字母间距、上下标嵌套、\dots、\operatorname、标识符 \mathrm 包装），serve-time 应用
   ├── math_quality.py    # 数学质量层：公式覆盖率统计 + OCR/编码异常检测 + prose OCR 规范化 + Unicode 数学字符/污染检测（含 CLI）
   └── server.py          # FastAPI：/api/zotero/* + /api/papers/* 接口 + 前端静态托管（mount("/")）
@@ -45,6 +45,8 @@ docs/
   └── superpowers/specs/ # 设计 spec 存档（同源格式，如 2026-09-01-session-observation-design.md）
 frontend/                # Web 前端（React + TypeScript + Ant Design + Vite）
   ├── src/               # App 三栏：论文列表 / markdown 阅读区 / SSE 对话区 + api client
+  │   ├── citation.ts    # 引用归一化/定位纯函数（chunk snippets → 已渲染 DOM 命中元素）
+  │   ├── cite-highlight.css # 引用定位高亮样式（.cite-flash，ReadingPanel 引用定位用）
   │   ├── markdown/      # plugins.ts 共享 remark/rehype 插件栈（阅读区 + 对话区共用）
   │   │                  # rehypeMathInHtml 插件：渲染原生 HTML table 内的 $..$（remark-math 看不到的部分）
   │   │                  # 渲染栈：react-markdown + remark-math/rehype-katex（公式）+ rehype-raw（HTML 表格/sub/sup）+ rehypeMathInHtml + github-markdown-css
@@ -52,7 +54,7 @@ frontend/                # Web 前端（React + TypeScript + Ant Design + Vite�
   │   └── ...
   ├── scripts/           # math-coverage.mjs：公式覆盖率校验（raw → remark-math → raw-HTML → KaTeX 渲染计数）
   └── dist/              # 构建产物（npm run build 输出，server.py 静态托管）
-tests/                   # 256 个 Python 测试 + 17 个前端 vitest，全过
+tests/                   # 277 个 Python 测试 + 39 个前端 vitest，全过
 config.example.yaml      # 配置模板（提交）
 config.yaml              # 实际配置（gitignore）
 .venv/                   # 虚拟环境（gitignore）
@@ -96,10 +98,12 @@ PDF → MinerU CLI (VLM 版面分析) → content_list_v2.json + images/ + .md
        ├─ 有缓存 → 直接 ready；无缓存 → 后台线程异步 MinerU 解析（不阻塞）
        └─ 前端轮询 /api/papers/{id}/status 直到 ready
   → GET /api/papers/{id}/overview|content|images/*  — 摘要 / markdown 阅读区 / 图片
+  → GET /api/papers/{id}/chunks-index  — chunk 定位索引（id/page/section/snippets，snippets 已剥公式与 HTML）
   → GET|DELETE /api/papers/{id}/history  — 对话历史读取（前端打开论文自动恢复 + 分割线）/ 清空（联动清 session 观察）
   → POST /api/papers/{id}/chat     — SSE 对话（StreamingResponse）
        → papers.chat_events() 在 worker 线程驱动 PaperAgent.run_stream()
        → 队列转发 on_event → SSE 帧：event: <etype>\ndata: <json>\n\n
+       → 回答中的 [§x.x p.N](cite:chunk_N) 链接由 ChatPanel 拦截点击，App 按 chunks-index 让 ReadingPanel 滚动高亮
 ```
 
 **SSE 事件协议**（`papers.chat_events` yield `(etype, payload)`，前端 `sse.ts` 解析）：
@@ -232,13 +236,13 @@ LLMToolResponse       — LLM 返回解析 {text, tool_calls}
 - [x] **检索瘦身**：chunk 阈值 480→240 tokens（约 960 字），`search_paper` window=1→0，返回量从 13-16K 降到 3-5K
 - [x] **工具调用语言**：工具参数（查询、章节引用、观察记录）一律英文（论文是英文），仅最终回答中文；工具描述改写为英文
 
-### P3：引用溯源（下一步）
+### P3：引用溯源 ✅ 已完成
 
-回答标注来源，让用户知道每段信息来自论文的哪一部分。
+回答标注来源，让用户知道每段信息来自论文的哪一部分。已实现形态：回答内嵌引用链接 + 阅读区滚动高亮。
 
-`Observation.sources` 字段已支持 `['p3 §2.1']` 格式的引用标注（基础设施就绪），待做：
-- [ ] system prompt 引导 LLM 在 record_observation 和最终回答中引用来源
-- [ ] 最终回答中标注来源 chunk / page_idx / 章节
+- [x] system prompt 引导 LLM 在 record_observation 和最终回答中引用来源
+- [x] 最终回答中标注来源 chunk / page_idx / 章节
+- [x] 引用链接 + 阅读区滚动高亮 — 回答中的 `[§x.x p.N](cite:chunk_N)` 链接由 ChatPanel 拦截点击，App 按 chunks-index 让 ReadingPanel 滚动高亮（设计见关键设计决策 #18）
 
 ### P4：Web 应用（当前方向，MVP 已完成）
 
@@ -296,6 +300,7 @@ LLMToolResponse       — LLM 返回解析 {text, tool_calls}
 15. **`paper-web` 一键启动 + 两个启动前置**：启动命令是 `~/.local/bin/paper-web` bash 脚本（`cd` 项目 + `source .venv/bin/activate` + 后台 `explorer.exe` 开浏览器 + `exec uvicorn`），任意目录可敲、无参数。两个易踩的坑：① **前端 `npm run build` 是首次启动前置**——`frontend/dist/` 不存在时 server.py 静默跳过静态托管，根路径 `/` 返回 404（需构建后重启后端才生效）；② **Zotero sqlite 连接必须 `check_same_thread=False`**——`get_library` 是带 yield 的同步依赖，FastAPI 线程池里创建连接与执行查询在不同线程，默认 `check_same_thread=True` 会报 `SQLite objects created in a thread can only be used in that same thread`；只读连接（`mode=ro`）+ `sqlite3.threadsafety=1`（serialized）下关掉检查是安全的。旧 `launch.bat`（需 CRLF + 纯 ASCII）已废弃
 16. **中间产物落盘原则：可重建的不存，不可重建的才存**（2026-09-01）— `search_paper`/`get_section` 的检索原文不落盘（chunk 索引本身就是持久化 + 检索层，BGE-M3 本地重查免费）；只落盘模型产物：session observations（跨提问证据链，`{sha}-observations.json` 全量 append 不去重，prompt 只注入最近 20 条）和 `describe_image` 图像描述（`{sha}-images.json`，论文级，key 用图片相对路径——resource id 尾号是当次枚举序号，跨调用不稳定）。观察注入带「未经复核」标注，定位为线索而非事实；记录标准是"有独立价值的事实即使与当次问题无关也记"，sources 必填。observations 与 history 同生同灭，图像描述独立存在。spec: `docs/superpowers/specs/2026-09-01-session-observation-design.md`
 17. **章节层级以编号深度为准**：MinerU 可能把父子节标题标成同一 level（如全部 level 2），`find_section` 因此用编号深度（`6` < `6.1` < `6.1.1`）计算有效层级，无编号标题退回 parser level；heading-only 的匹配结果兜底顺延后续块（2000 字上限）。注意 `merge_blocks` 的 `section_path` 仍按原始 level 截断（平层级解析下路径也是平的），目前无读取方，暂未修
+18. **P3 引用溯源：引用即文本**：chunk 是引用的统一锚点。链路：检索文本带 `[src chunk_N §标题 p.页]` 标签 → system prompt 要求回答内嵌 `[§x.x p.N](cite:chunk_N)` 链接（编号只能取上下文中可见的 [src] 标签）——链接就是普通 markdown 文本，SSE 通道与历史持久化零协议改动 → 前端 ChatPanel 的 urlTransform 放行 `cite:` scheme，点击后 App 按 chunks-index 定位，DOM 归一化匹配（两侧同规则剥空白/标点，排除 `.katex` 子树，多处命中取最深元素）。已知限制：早期轮次工具结果被压缩移除 [src] 标签后，对应 chunk 不再可引用（prompt 约束宁可不加链接）
 
 ## 常用命令
 
@@ -313,8 +318,8 @@ paper-web                              # 一键启动 Web 版（激活 venv + �
 cd frontend && npm run dev              # 前端开发模式（Vite HMR，需后端已起）
 cd frontend && npm run build            # 构建前端到 dist/（server.py 静态托管）
 
-python3 -m pytest tests/ -v                   # Python 测试 (256)
-cd frontend && npx vitest run                 # 前端 vitest (17)
+python3 -m pytest tests/ -v                   # Python 测试 (277)
+cd frontend && npx vitest run                 # 前端 vitest (39)
 python3 -m paper_reader.math_quality paper.md        # 数学质量分析（OCR/编码/污染）
 python3 -m paper_reader.math_quality paper.md --fix out.md  # 输出清洗后的 md
 cd frontend && node scripts/math-coverage.mjs out.md      # 公式覆盖率校验

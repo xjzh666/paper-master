@@ -340,6 +340,51 @@ def test_chat_events_streams_tools_then_answer(tmp_path, monkeypatch):
     assert "答案是A" in last["content"]
 
 
+def test_chat_events_preserves_citation_link_in_answer_chunks(tmp_path, monkeypatch):
+    """Contract test (P3 citations): a `[§x.x p.N](cite:chunk_N)` link emitted
+    by the LLM must pass through the chat_events SSE channel unchanged."""
+    pdf = tmp_path / "p.pdf"
+    pdf.write_bytes(b"pdfdata")
+    key = papers._paper_id_for_path(str(pdf))
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    paper = PaperDocument(filepath=str(pdf), title="T", abstract="",
+                          blocks=[], chunks=[], result_dir=str(tmp_path))
+    papers.sessions[key] = papers.Session(paper)
+    monkeypatch.setattr(papers, "CACHE_DIR", cache_dir)
+    monkeypatch.setattr("paper_reader.observations.CACHE_DIR", cache_dir)
+
+    class _FakeStreamText:
+        def chat_with_tools_stream(self, messages, tools, system_prompt=""):
+            yield from [
+                ("text_delta", "准确率达 92% "),
+                ("text_delta", "[§3.2 p.4](cite:chunk_0)"),
+                ("text_delta", "。"),
+                ("tool_calls", []),
+            ]
+
+    class _FakeVision:
+        def chat_with_images(self, text, images, system_prompt=""):
+            return "desc"
+
+    class _FakeRouter:
+        def __init__(self):
+            self._text_client = _FakeStreamText()
+            self._vision_client = _FakeVision()
+
+    monkeypatch.setattr(papers, "ROUTER", _FakeRouter())
+
+    events = list(papers.chat_events(key, "实验效果如何?"))
+
+    types = [t for t, _ in events]
+    assert "error" not in types
+    assert types[-1] == "done"
+    answer = "".join(p["delta"] for t, p in events if t == "answer_chunk")
+    assert "[§3.2 p.4](cite:chunk_0)" in answer
+    # persisted history keeps the link verbatim (restart-safe clickability)
+    assert "[§3.2 p.4](cite:chunk_0)" in papers.sessions[key].ctx.history[-1]["content"]
+
+
 def test_get_chat_history_prefers_session_over_disk(tmp_path, monkeypatch):
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()
