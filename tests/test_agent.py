@@ -938,3 +938,174 @@ def test_describe_image_caches_api_result():
     # 第二次调用走缓存，不再调 vision API
     assert desc_fn(resource_id="img_1").text == result.text
     assert len(vision.calls) == 1
+
+
+# ── P3 citation source labels ([src chunk_N §<标题> p.<页>]) ───────────
+
+
+class CitationCtx:
+    """Fake ctx with controllable retrieval order and block→chunk object mapping.
+
+    build_context mirrors the real ConversationContext at window=0: dedup + paper
+    order. search_chunks returns the configured retrieval order, which may differ.
+    """
+
+    def __init__(self, chunks, blocks, retrieval_order=None):
+        from paper_reader.blocks import PaperDocument
+        self.paper = PaperDocument(
+            filepath="/tmp/test.pdf", title="Test Paper", result_dir="/tmp/test_result",
+        )
+        self.paper.chunks = list(chunks)
+        self.paper.blocks = list(blocks)
+        self._retrieval_order = list(retrieval_order) if retrieval_order else list(chunks)
+        self.history = []
+        self.observations = []
+        self.image_descriptions = None
+
+    def search_chunks(self, query, top_k=3):
+        return list(self._retrieval_order)[:top_k]
+
+    def build_context(self, chunks, window=2):
+        index = {id(c): i for i, c in enumerate(self.paper.chunks)}
+        ordered = sorted({index[id(c)] for c in chunks if id(c) in index})
+        text = "\n\n".join(self.paper.chunks[i].text for i in ordered)
+        images = []
+        for i in ordered:
+            images.extend(self.paper.chunks[i].images)
+        return text, images
+
+    def find_section(self, reference):
+        ref = reference.strip().lower()
+        heading_idx = None
+        heading_level = 0
+        for i, b in enumerate(self.paper.blocks):
+            if b.level > 0 and ref in b.text.strip().lower():
+                heading_idx = i
+                heading_level = b.level
+                break
+        if heading_idx is None:
+            return None
+        result = []
+        for b in self.paper.blocks[heading_idx:]:
+            if result and b.level > 0 and b.level <= heading_level:
+                break
+            result.append(b)
+        return result
+
+
+def _citation_search_fn(ctx):
+    tools = _make_tools(ctx, FakeVisionClient(), {}, [])
+    return next(t for t in tools if t.name == "search_paper").callable
+
+
+def _citation_section_fn(ctx):
+    tools = _make_tools(ctx, FakeVisionClient(), {}, [])
+    return next(t for t in tools if t.name == "get_section").callable
+
+
+def test_search_paper_labels_each_chunk_in_retrieval_order():
+    from paper_reader.blocks import ContentBlock, SemanticChunk
+    b_a1 = ContentBlock(type="text", text="3.2 Method", level=1, page_idx=3)
+    b_a2 = ContentBlock(type="text", text="We propose the SOTK scheme.", level=0, page_idx=3)
+    chunk_a = SemanticChunk(chunk_id="chunk_0", text="3.2 Method\nWe propose the SOTK scheme.",
+                            blocks=[b_a1, b_a2], section_path=["3.2 Method"])
+    b_b1 = ContentBlock(type="text", text="Intro text", level=0, page_idx=0)
+    chunk_b = SemanticChunk(chunk_id="chunk_5", text="Intro text",
+                            blocks=[b_b1], section_path=[])
+    # 检索顺序 [chunk_b, chunk_a] 不同于 paper 顺序：标签必须按检索顺序排
+    ctx = CitationCtx(chunks=[chunk_a, chunk_b], blocks=[b_b1, b_a1, b_a2],
+                      retrieval_order=[chunk_b, chunk_a])
+
+    result = _citation_search_fn(ctx)(query="anything")
+    assert result.text == (
+        "[src chunk_5 p.1]\n"
+        "Intro text\n"
+        "\n"
+        "[src chunk_0 §3.2 Method p.4]\n"
+        "3.2 Method\n"
+        "We propose the SOTK scheme."
+    )
+    assert result.resources == []
+
+
+def test_search_paper_label_strips_html_and_takes_min_page():
+    from paper_reader.blocks import ContentBlock, SemanticChunk
+    b1 = ContentBlock(type="text", text="First page of discussion", level=0, page_idx=7)
+    b2 = ContentBlock(type="text", text="Second page", level=0, page_idx=8)
+    chunk = SemanticChunk(chunk_id="chunk_2", text="First page of discussion\nSecond page",
+                          blocks=[b1, b2], section_path=["<h1>6 Discussion</h1>"])
+    ctx = CitationCtx(chunks=[chunk], blocks=[b1, b2])
+
+    result = _citation_search_fn(ctx)(query="discussion")
+    assert result.text.startswith("[src chunk_2 §6 Discussion p.8]\n")
+
+
+def test_search_paper_alias_path_has_labels_and_resources():
+    from paper_reader.blocks import ContentBlock, SemanticChunk
+    img = ContentBlock(type="image", text="Fig. 2. Architecture", level=0, page_idx=6,
+                       image_path="images/fig2.png")
+    chunk = SemanticChunk(chunk_id="chunk_3", text="Fig. 2. Architecture",
+                          blocks=[img], section_path=["3 Method"], images=[img],
+                          aliases=["Fig. 2", "Figure 2"])
+    ctx = CitationCtx(chunks=[chunk], blocks=[img])
+
+    result = _citation_search_fn(ctx)(query="讲解一下 Figure 2")
+    # alias 命中路径同样带标签；图片资源收集与「可用资源」附录行为不变
+    assert "[src chunk_3 §3 Method p.7]\nFig. 2. Architecture" in result.text
+    assert len(result.resources) == 1
+    assert "可用资源" in result.text
+    assert "image_6_0" in result.text
+
+
+def test_get_section_groups_blocks_by_chunk_with_labels():
+    from paper_reader.blocks import ContentBlock, SemanticChunk
+    h0 = ContentBlock(type="text", text="3 Method", level=1, page_idx=3)
+    h1 = ContentBlock(type="text", text="3.2 Setup", level=2, page_idx=3)
+    m1 = ContentBlock(type="text", text="We propose SOTK.", level=0, page_idx=4)
+    h2 = ContentBlock(type="text", text="3.3 Results", level=2, page_idx=7)
+    e1 = ContentBlock(type="text", text="We evaluate on 200 nodes.", level=0, page_idx=8)
+    chunk_a = SemanticChunk(chunk_id="chunk_0", text="3 Method\n3.2 Setup\nWe propose SOTK.",
+                            blocks=[h0, h1, m1], section_path=["3 Method", "3.2 Setup"])
+    chunk_b = SemanticChunk(chunk_id="chunk_2", text="3.3 Results\nWe evaluate on 200 nodes.",
+                            blocks=[h2, e1], section_path=["3 Method", "3.3 Results"])
+    ctx = CitationCtx(chunks=[chunk_a, chunk_b], blocks=[h0, h1, m1, h2, e1])
+
+    result = _citation_section_fn(ctx)(reference="3 Method")
+    assert result.text == (
+        "[src chunk_0 §3.2 Setup p.4]\n"
+        "3 Method\n"
+        "3.2 Setup\n"
+        "We propose SOTK.\n"
+        "\n"
+        "[src chunk_2 §3.3 Results p.8]\n"
+        "3.3 Results\n"
+        "We evaluate on 200 nodes."
+    )
+
+
+def test_get_section_truncation_keeps_group_label():
+    from paper_reader.blocks import ContentBlock, SemanticChunk
+    h = ContentBlock(type="text", text="5 Results", level=1, page_idx=2)
+    body = ContentBlock(type="text", text="R" * 4000, level=0, page_idx=2)
+    chunk = SemanticChunk(chunk_id="chunk_7", text="5 Results\n" + "R" * 4000,
+                          blocks=[h, body], section_path=["5 Results"])
+    ctx = CitationCtx(chunks=[chunk], blocks=[h, body])
+
+    result = _citation_section_fn(ctx)(reference="Results")
+    # 截断发生在组内时，该组标签已在截断前的文本里
+    assert "[src chunk_7 §5 Results p.3]" in result.text
+    assert result.text.index("[src chunk_7 §5 Results p.3]") < 3000
+    assert "已截断" in result.text
+    assert len(result.text) <= 3100
+
+
+def test_get_section_unmapped_blocks_have_no_label():
+    from paper_reader.blocks import ContentBlock
+    h = ContentBlock(type="text", text="6 Discussion", level=1, page_idx=0)
+    b = ContentBlock(type="text", text="We discuss limitations.", level=0, page_idx=0)
+    ctx = CitationCtx(chunks=[], blocks=[h, b])
+
+    result = _citation_section_fn(ctx)(reference="6 Discussion")
+    # block 找不到所属 chunk → 该组无标签、不报错
+    assert "[src" not in result.text
+    assert "We discuss limitations." in result.text

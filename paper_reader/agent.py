@@ -1,9 +1,10 @@
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from paper_reader.blocks import PaperDocument, PaperMemory
+from paper_reader.blocks import ContentBlock, PaperDocument, PaperMemory, SemanticChunk
 from paper_reader.observations import load_image_descriptions, save_image_descriptions
 
 
@@ -134,7 +135,6 @@ def _match_figure_alias(chunks: list, query: str) -> list:
 
     Supports: Figure 2, Fig. 3, Table 1, 图2, 图 2, 表1, etc.
     """
-    import re
     # Match Figure/Fig/Table/图/表 + optional dot + number
     m = re.search(r'(Fig(?:ure)?|Table|图|表)\s*\.?\s*(\d+)', query, re.IGNORECASE)
     if not m:
@@ -147,6 +147,49 @@ def _match_figure_alias(chunks: list, query: str) -> list:
         if label.lower() in aliases_lower or label_dot.lower() in aliases_lower:
             matched.append(chunk)
     return matched
+
+
+def _chunk_src_label(chunk: SemanticChunk) -> str:
+    """来源标签：[src chunk_<N> §<标题> p.<页>]。
+
+    - 标题 = section_path 末条剥 HTML 标签；section_path 为空则省略 § 部分
+    - 页码 = 组内块的最小 page_idx + 1（page_idx 0-based），格式 p.4
+    """
+    section = ""
+    if chunk.section_path:
+        section = re.sub(r"<[^>]+>", "", chunk.section_path[-1]).strip()
+    page_part = ""
+    if chunk.blocks:
+        page_part = f" p.{min(b.page_idx for b in chunk.blocks) + 1}"
+    if section:
+        return f"[src {chunk.chunk_id} §{section}{page_part}]"
+    return f"[src {chunk.chunk_id}{page_part}]"
+
+
+def _labeled_chunks_text(chunks: list[SemanticChunk]) -> str:
+    """按给定（检索）顺序拼接 chunk 文本，每组前置一行 [src] 标签。"""
+    return "\n\n".join(f"{_chunk_src_label(c)}\n{c.text}" for c in chunks)
+
+
+def _group_blocks_by_chunk(
+        blocks: list[ContentBlock],
+        chunks: list[SemanticChunk]) -> list[tuple[SemanticChunk | None, list[ContentBlock]]]:
+    """把连续的、属于同一 chunk 的 block 归为一组（对象身份匹配）。
+
+    返回 [(chunk | None, blocks)]；block 找不到所属 chunk 时组为 None（无标签）。
+    """
+    owner: dict[int, SemanticChunk] = {}
+    for c in chunks:
+        for b in c.blocks:
+            owner[id(b)] = c
+    groups: list[tuple[SemanticChunk | None, list[ContentBlock]]] = []
+    for b in blocks:
+        chunk = owner.get(id(b))
+        if groups and groups[-1][0] is chunk:
+            groups[-1][1].append(b)
+        else:
+            groups.append((chunk, [b]))
+    return groups
 
 
 def _relative_image_path(ctx, full_path: str) -> str | None:
@@ -172,12 +215,14 @@ def _make_tools(ctx, vision_client, resources_store: dict, observations_store: l
         # Exact alias match for figure/table references (Fig. 2, Table 1, 图3, etc.)
         alias_chunks = _match_figure_alias(ctx.paper.chunks, query)
         if alias_chunks:
-            text, image_blocks = ctx.build_context(alias_chunks, window=0)
+            chunks = alias_chunks
         else:
             chunks = ctx.search_chunks(query, top_k=3)
             if not chunks:
                 return ToolResult(text="[检索结果为空]")
-            text, image_blocks = ctx.build_context(chunks, window=0)
+        # 图片资源仍经 build_context 收集（行为不变）；文本按检索顺序重建并加 [src] 标签
+        _, image_blocks = ctx.build_context(chunks, window=0)
+        text = _labeled_chunks_text(chunks)
         resources = []
         for i, img in enumerate(image_blocks):
             if img.image_path:
@@ -197,7 +242,17 @@ def _make_tools(ctx, vision_client, resources_store: dict, observations_store: l
         blocks = ctx.find_section(reference)
         if blocks is None:
             return ToolResult(text=f"[未找到章节: {reference}]")
-        text = "\n".join(b.text for b in blocks if b.text.strip())
+        # 按 block→chunk 归组，每组前置该 chunk 的 [src] 标签（映射缺失的组无标签）
+        parts: list[str] = []
+        for chunk, group_blocks in _group_blocks_by_chunk(blocks, ctx.paper.chunks):
+            body = "\n".join(b.text for b in group_blocks if b.text.strip())
+            if not body:
+                continue
+            if chunk is not None:
+                parts.append(f"{_chunk_src_label(chunk)}\n{body}")
+            else:
+                parts.append(body)
+        text = "\n\n".join(parts)
         full_len = len(text)
         if full_len > 3000:
             text = text[:3000] + f"\n[已截断，原文共 {full_len} 字，请用更具体的 reference 缩小范围]"
