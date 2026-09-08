@@ -222,6 +222,52 @@ def get_content(paper_id: str) -> str:
     return re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", _rewrite, text)
 
 
+# ── chunks-index（P3 引用定位数据）────────────────────────────────────
+_MATH_DISPLAY_RE = re.compile(r"\$\$.*?\$\$", re.DOTALL)
+_MATH_INLINE_RE = re.compile(r"\$.*?\$", re.DOTALL)
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_SNIPPET_MAX_CHARS = 80
+_SNIPPET_MAX_COUNT = 6
+
+
+def _snippet_for_block(text: str) -> str:
+    """text 块 → 定位片段：剥成对数学区段（先 $$..$$ 后 $..$，非贪婪）
+    → 剥 HTML 标签 → 去首尾空白 → 截前 80 字符。剥离后为空返回空串。"""
+    text = _MATH_DISPLAY_RE.sub("", text)
+    text = _MATH_INLINE_RE.sub("", text)
+    text = _HTML_TAG_RE.sub("", text)
+    return text.strip()[:_SNIPPET_MAX_CHARS]
+
+
+def get_chunks_index(paper_id: str) -> dict:
+    """每 chunk 的定位信息（页码/章节/片段），供前端「点击引用 → 阅读区滚动高亮」。
+
+    只读内存中已解析的 paper，不触发解析（未解析抛 KeyError → 404）。
+    """
+    session = _require_session(paper_id)
+    chunks = []
+    for chunk in session.paper.chunks:
+        snippets: list[str] = []
+        for block in chunk.blocks:
+            if len(snippets) >= _SNIPPET_MAX_COUNT:
+                break
+            if block.type != "text":
+                continue
+            snippet = _snippet_for_block(block.text)
+            if snippet:
+                snippets.append(snippet)
+        section = ""
+        if chunk.section_path:
+            section = _HTML_TAG_RE.sub("", chunk.section_path[-1]).strip()
+        chunks.append({
+            "id": chunk.chunk_id,
+            "page": min((b.page_idx for b in chunk.blocks), default=0) + 1,
+            "section": section,
+            "snippets": snippets,
+        })
+    return {"chunks": chunks}
+
+
 def get_image_path(paper_id: str, relpath: str) -> Path | None:
     session = _require_session(paper_id)
     result_dir = Path(session.paper.result_dir).resolve()

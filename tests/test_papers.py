@@ -385,6 +385,110 @@ def test_clear_chat_history_clears_session_and_disk(tmp_path, monkeypatch):
     papers.clear_chat_history("nonexistent")
 
 
+def _mk_chunk(chunk_id, text, blocks, section_path):
+    """Build a chunk with embeddings pre-set so ConversationContext
+    skips BGE-M3 encoding (and cache writes) when building a Session."""
+    from paper_reader.blocks import SemanticChunk
+    return SemanticChunk(chunk_id=chunk_id, text=text, blocks=blocks,
+                         section_path=section_path,
+                         embedding=[0.0], lexical_weights={})
+
+
+def _chunks_index_session(tmp_path, chunks):
+    """Register a session with the given chunks under a fresh paper id."""
+    pdf = tmp_path / "p.pdf"
+    pdf.write_bytes(b"pdfdata")
+    key = papers._paper_id_for_path(str(pdf))
+    paper = PaperDocument(filepath=str(pdf), title="T", abstract="",
+                          blocks=[], chunks=chunks, result_dir=str(tmp_path))
+    papers.sessions[key] = papers.Session(paper)
+    return key
+
+
+def test_get_chunks_index_page_section_order(tmp_path):
+    from paper_reader.blocks import ContentBlock
+    c0 = _mk_chunk("chunk_0", "a",
+                   [ContentBlock(type="text", text="Alpha.", page_idx=3),
+                    ContentBlock(type="text", text="Beta.", page_idx=4)],
+                   ["1 Intro", "3.2 Method"])
+    c1 = _mk_chunk("chunk_1", "b",
+                   [ContentBlock(type="text", text="Gamma.", page_idx=9)], [])
+    key = _chunks_index_session(tmp_path, [c0, c1])
+
+    idx = papers.get_chunks_index(key)
+    assert [c["id"] for c in idx["chunks"]] == ["chunk_0", "chunk_1"]
+    assert idx["chunks"][0]["page"] == 4  # min(3, 4) + 1, cross-page chunk
+    assert idx["chunks"][0]["section"] == "3.2 Method"  # last section_path entry
+    assert idx["chunks"][0]["snippets"] == ["Alpha.", "Beta."]
+    assert idx["chunks"][1]["page"] == 10
+    assert idx["chunks"][1]["section"] == ""
+
+
+def test_get_chunks_index_section_strips_html(tmp_path):
+    from paper_reader.blocks import ContentBlock
+    chunk = _mk_chunk("chunk_0", "t",
+                      [ContentBlock(type="text", text="x", page_idx=0)],
+                      ["<b>4.1</b> Setup"])
+    key = _chunks_index_session(tmp_path, [chunk])
+    assert papers.get_chunks_index(key)["chunks"][0]["section"] == "4.1 Setup"
+
+
+def test_get_chunks_index_skips_non_text_blocks(tmp_path):
+    from paper_reader.blocks import ContentBlock
+    chunk = _mk_chunk("chunk_0", "t",
+                      [ContentBlock(type="image", text="Fig. 1", page_idx=0),
+                       ContentBlock(type="table", text="TABLE I", page_idx=0),
+                       ContentBlock(type="formula", text="E=mc^2", page_idx=0),
+                       ContentBlock(type="text", text="Only text.", page_idx=0)],
+                      ["2"])
+    key = _chunks_index_session(tmp_path, [chunk])
+    idx = papers.get_chunks_index(key)
+    assert idx["chunks"][0]["snippets"] == ["Only text."]
+
+
+def test_get_chunks_index_snippet_strips_math_and_html(tmp_path):
+    from paper_reader.blocks import ContentBlock
+    chunk = _mk_chunk("chunk_0", "t",
+                      [ContentBlock(type="text",
+                                    text="We evaluate <b>SOTK</b> on $x^2$ nodes.",
+                                    page_idx=0),
+                       ContentBlock(type="text", text="$$E = mc^2$$", page_idx=0),
+                       ContentBlock(type="text",
+                                    text="  display $$a+b$$ tail", page_idx=0)],
+                      [])
+    key = _chunks_index_session(tmp_path, [chunk])
+    snippets = papers.get_chunks_index(key)["chunks"][0]["snippets"]
+    # math stripped first, then HTML; inner double space preserved
+    assert snippets[0] == "We evaluate SOTK on  nodes."
+    # display-only block strips to empty → dropped; surrounding whitespace trimmed
+    assert snippets[1] == "display  tail"
+    assert len(snippets) == 2
+
+
+def test_get_chunks_index_caps_snippets_at_six(tmp_path):
+    from paper_reader.blocks import ContentBlock
+    blocks = [ContentBlock(type="text", text=f"Block {i}.", page_idx=0)
+              for i in range(7)]
+    chunk = _mk_chunk("chunk_0", "t", blocks, [])
+    key = _chunks_index_session(tmp_path, [chunk])
+    snippets = papers.get_chunks_index(key)["chunks"][0]["snippets"]
+    assert snippets == [f"Block {i}." for i in range(6)]
+
+
+def test_get_chunks_index_truncates_snippet_to_80_chars(tmp_path):
+    from paper_reader.blocks import ContentBlock
+    chunk = _mk_chunk("chunk_0", "t",
+                      [ContentBlock(type="text", text="w" * 100, page_idx=0)], [])
+    key = _chunks_index_session(tmp_path, [chunk])
+    snippets = papers.get_chunks_index(key)["chunks"][0]["snippets"]
+    assert len(snippets[0]) == 80
+
+
+def test_get_chunks_index_unparsed_paper_raises_keyerror():
+    with pytest.raises(KeyError):
+        papers.get_chunks_index("no-such-paper")
+
+
 def test_open_paper_restores_observations(tmp_path, monkeypatch):
     pdf = tmp_path / "p.pdf"
     pdf.write_bytes(b"pdfdata")

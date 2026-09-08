@@ -126,6 +126,43 @@ def test_chat_endpoint_streams_sse(zotero_db, tmp_path, monkeypatch):
     assert "event: done" in res.text
 
 
+def test_chunks_index_endpoint(zotero_db, tmp_path, monkeypatch):
+    from paper_reader.blocks import SemanticChunk
+    key = _seed_cached_paper(zotero_db, tmp_path, monkeypatch)
+    # embeddings pre-set so Session building skips BGE-M3 encoding + cache write
+    chunk = SemanticChunk(chunk_id="chunk_0", text="body",
+                          section_path=["3.2 Method"],
+                          embedding=[0.0], lexical_weights={},
+                          blocks=[ContentBlock(type="text", text="First block.",
+                                               page_idx=3),
+                                  ContentBlock(type="text", text="Second block.",
+                                               page_idx=4)])
+    papers.sessions[key] = papers.Session(
+        PaperDocument(filepath="/tmp/x", title="Honeypot Evolution",
+                      abstract="abs", result_dir=str(tmp_path / "result"),
+                      blocks=[], chunks=[chunk]))
+
+    app = create_app(zotero_db)
+    with TestClient(app) as client:
+        res = client.get(f"/api/papers/{key}/chunks-index")
+    assert res.status_code == 200
+    assert res.json()["chunks"] == [
+        {"id": "chunk_0", "page": 4, "section": "3.2 Method",
+         "snippets": ["First block.", "Second block."]},
+    ]
+
+
+def test_chunks_index_endpoint_unparsed_paper_404(zotero_db, tmp_path, monkeypatch):
+    _seed_cached_paper(zotero_db, tmp_path, monkeypatch)
+    app = create_app(zotero_db)
+    with TestClient(app) as client:
+        res = client.get("/api/papers/unknown/chunks-index")
+    assert res.status_code == 404
+    assert res.json()["detail"] == "paper not parsed"
+    # 404 only: no parse was triggered, no session appeared
+    assert "unknown" not in papers.sessions
+
+
 def test_history_endpoints_get_and_delete(zotero_db, tmp_path, monkeypatch):
     key = _seed_cached_paper(zotero_db, tmp_path, monkeypatch)
     cache_dir = tmp_path / "cache"

@@ -95,6 +95,13 @@ def create_app(data_dir: Path | None = None,
         except KeyError:
             raise HTTPException(status_code=404, detail="paper not parsed")
 
+    @app.get("/api/papers/{paper_id}/chunks-index")
+    def paper_chunks_index(paper_id: str):
+        try:
+            return papers.get_chunks_index(paper_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="paper not parsed")
+
     @app.get("/api/papers/{paper_id}/history")
     def paper_history(paper_id: str):
         return {"messages": papers.get_chat_history(paper_id)}
