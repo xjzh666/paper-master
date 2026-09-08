@@ -1109,3 +1109,43 @@ def test_get_section_unmapped_blocks_have_no_label():
     # block 找不到所属 chunk → 该组无标签、不报错
     assert "[src" not in result.text
     assert "We discuss limitations." in result.text
+
+
+# ── P3 citation protocol (SYSTEM_PROMPT + record_observation sources) ──
+
+
+def test_system_prompt_contains_citation_link_format():
+    """引用协议段给出可点击引用链接格式（要点 1：链接格式说明）。"""
+    from paper_reader.agent import SYSTEM_PROMPT
+    assert "(cite:chunk_" in SYSTEM_PROMPT
+    assert "[§<编号> p.<页>](cite:chunk_<N>)" in SYSTEM_PROMPT
+
+
+def test_system_prompt_chunk_ids_from_visible_src_labels_only():
+    """编号来源约束：chunk_<N> 只能取当前上下文可见 [src ...] 标签里的编号，禁止编造（要点 2）。"""
+    from paper_reader.agent import SYSTEM_PROMPT
+    assert "[src" in SYSTEM_PROMPT
+    assert "编造" in SYSTEM_PROMPT
+
+
+def test_system_prompt_unnumbered_section_link_format():
+    """无编号章节（Abstract/References 等）的链接写法（要点 3）。"""
+    from paper_reader.agent import SYSTEM_PROMPT
+    assert "[p.<页>](cite:chunk_N)" in SYSTEM_PROMPT
+
+
+def test_system_prompt_no_link_when_label_compacted():
+    """压缩约束：往轮工具结果被压缩、标签已不在上下文时宁可不加链接（要点 4，对应 KEEP_RECENT_ROUNDS）。"""
+    from paper_reader.agent import SYSTEM_PROMPT
+    assert "压缩" in SYSTEM_PROMPT
+    assert "宁可不加链接" in SYSTEM_PROMPT
+
+
+def test_record_observation_sources_description_uses_src_label_format():
+    """sources 参数描述沿用检索标签格式，例值含 chunk_ 编号。"""
+    ctx = FakeCtx()
+    tools = _make_tools(ctx, FakeVisionClient(), {}, [])
+    tool = next(t for t in tools if t.name == "record_observation")
+    desc = tool.parameters["properties"]["sources"]["description"]
+    assert "chunk_" in desc
+    assert "['chunk_3 §3.2 p.4']" in desc

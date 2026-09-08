@@ -366,7 +366,8 @@ def _make_tools(ctx, vision_client, resources_store: dict, observations_store: l
                 "summarize what you learned this round — this preserves knowledge across rounds and "
                 "keeps the conversation context compact. summary is a one-sentence summary of the "
                 "findings; facts is a list of key facts; entities is a list of key concepts/methods/"
-                "metrics; sources is provenance like ['p3 §2.1']."
+                "metrics; sources is provenance in the retrieval label format like "
+                "['chunk_3 §3.2 p.4']."
             ),
             parameters={
                 "type": "object",
@@ -385,7 +386,10 @@ def _make_tools(ctx, vision_client, resources_store: dict, observations_store: l
                     "sources": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Provenance annotations, e.g. ['p3 §2.1', 'p5 §4.2']",
+                        "description": (
+                            "Provenance annotations reusing the [src ...] labels attached to the "
+                            "retrieved text, e.g. ['chunk_3 §3.2 p.4']"
+                        ),
                     },
                 },
                 "required": ["summary"],
@@ -416,6 +420,13 @@ SYSTEM_PROMPT = """你是一个论文阅读助手。你根据提供的论文内�
 - 如果连续两次检索都没有找到新信息，请基于已有内容作答
 - 每次调用 search_paper 或 get_section 后，请同时调用 record_observation 记录本轮关键发现，便于后续推理时回顾
 - record_observation 的记录标准：有独立价值的事实（关键数字、实验设置、结论性陈述）即使与当前问题无直接关系也应记录，并始终在 sources 注明出处
+
+引用来源标注:
+- search_paper / get_section 返回的每组文本前带有来源标签 [src chunk_N §标题 p.页]，标明该段内容的出处
+- 最终回答中，关键陈述（实验数据、结论、方法要点）后附引用链接，格式为 [§<编号> p.<页>](cite:chunk_<N>)，例如「……准确率达 92% [§5.1 p.6](cite:chunk_4)。」
+- 章节没有编号时（如 Abstract、References），链接文本写 [p.<页>](cite:chunk_N)，例如 [p.1](cite:chunk_0)
+- 链接中的 chunk_<N> 只能取当前上下文中可见 [src ...] 标签里出现过的编号，禁止编造
+- 早期轮次的工具结果会被压缩，若 [src ...] 标签已不在当前上下文中，宁可不加链接
 
 你可以使用工具来检索论文内容。根据用户问题自主判断是否需要调用工具。"""
 
