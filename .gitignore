@@ -5,6 +5,7 @@ __pycache__/
 venv/
 dist/
 .claude/worktrees/
+.agent/
 *.egg-info/
 CLAUDE.md
 papers
