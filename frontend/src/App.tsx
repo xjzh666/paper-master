@@ -21,7 +21,7 @@ export default function App() {
   const [overview, setOverview] = useState<PaperOverview | null>(null)
   const [markdown, setMarkdown] = useState('')
   const [chunkIndex, setChunkIndex] = useState<ChunkIndexEntry[] | null>(null)
-  // Task 6（ReadingPanel 定位高亮）将消费 citeTarget
+  // citeTarget 由 ReadingPanel 消费（引用定位高亮，Task 6）
   const [citeTarget, setCiteTarget] = useState<CiteTarget | null>(null)
   const pollRef = useRef<number | null>(null)
   const paperIdRef = useRef<string | null>(null)
@@ -107,7 +107,14 @@ export default function App() {
         <ChatPanel paperId={paperId} disabled={status !== 'ready'} onCite={handleCite} />
       </Content>
       <Sider width={560} theme="light" style={{ padding: 16, overflow: 'auto' }}>
-        <ReadingPanel status={status} error={error} overview={overview} markdown={markdown} />
+        <ReadingPanel
+          status={status}
+          error={error}
+          overview={overview}
+          markdown={markdown}
+          citeTarget={citeTarget}
+          chunkIndex={chunkIndex}
+        />
       </Sider>
     </Layout>
   )

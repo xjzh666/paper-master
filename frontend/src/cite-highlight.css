@@ -1,0 +1,6 @@
+/* 引用定位高亮：命中块短暂背景高亮，明显但不刺眼（ReadingPanel 引用定位用） */
+.cite-flash {
+  background-color: #fff3bf;
+  border-radius: 2px;
+  transition: background-color 0.4s ease;
+}
