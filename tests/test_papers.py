@@ -491,7 +491,7 @@ def test_get_chunks_index_skips_non_text_blocks(tmp_path):
     assert idx["chunks"][0]["snippets"] == ["Only text."]
 
 
-def test_get_chunks_index_snippet_strips_math_and_html(tmp_path):
+def test_get_chunks_index_snippet_keeps_math_content(tmp_path):
     from paper_reader.blocks import ContentBlock
     chunk = _mk_chunk("chunk_0", "t",
                       [ContentBlock(type="text",
@@ -503,11 +503,31 @@ def test_get_chunks_index_snippet_strips_math_and_html(tmp_path):
                       [])
     key = _chunks_index_session(tmp_path, [chunk])
     snippets = papers.get_chunks_index(key)["chunks"][0]["snippets"]
-    # math stripped first, then HTML; inner double space preserved
-    assert snippets[0] == "We evaluate SOTK on  nodes."
-    # display-only block strips to empty → dropped; surrounding whitespace trimmed
-    assert snippets[1] == "display  tail"
-    assert len(snippets) == 2
+    # delimiters stripped first, then HTML tags; math content kept; inner double space preserved
+    assert snippets[0] == "We evaluate SOTK on x^2 nodes."
+    # display-only block no longer dropped: its LaTeX content is the snippet
+    assert snippets[1] == "E = mc^2"
+    assert snippets[2] == "display a+b tail"
+    assert len(snippets) == 3
+
+
+def test_snippet_for_block_keeps_math_content():
+    # math delimiters stripped (display then inline, non-greedy), content kept
+    assert papers._snippet_for_block(
+        "We evaluate <b>SOTK</b> on $x^2$ nodes.") == "We evaluate SOTK on x^2 nodes."
+    # pure-formula block yields its LaTeX content instead of empty
+    assert papers._snippet_for_block("$$E = mc^2$$") == "E = mc^2"
+
+
+def test_snippet_for_block_bare_math_untouched():
+    # bare math (no $ delimiters, as in content_list text blocks) kept as-is
+    text = "While for small values of  d _ { k } the two..."
+    assert papers._snippet_for_block(text) == text
+
+
+def test_snippet_for_block_unpaired_dollar_keeps_content():
+    # "$5 and $10" pairs as one math span; new semantics keeps inner content
+    assert papers._snippet_for_block("a $5 and $10 b") == "a 5 and 10 b"
 
 
 def test_get_chunks_index_caps_snippets_at_six(tmp_path):

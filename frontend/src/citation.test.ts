@@ -21,7 +21,17 @@ describe('normalizeKey', () => {
 })
 
 describe('elementKeyText', () => {
-  it('取 textContent 时排除 .katex 子树', () => {
+  it('含 annotation 的 .katex：替换为其 MathML annotation 的 LaTeX 源参与归一化，视觉层文本丢弃', () => {
+    const p = dom(
+      '<p>Hello <span class="katex"><span class="katex-mathml"><math><annotation encoding="application/x-tex">d_{k}</annotation></math></span><span class="katex-html">VISUAL-JUNK</span></span> world</p>',
+    ).querySelector('p')!
+    const key = elementKeyText(p)
+    expect(key).toBe('hellodkworld')
+    expect(key).toContain('dk')
+    expect(key).not.toContain('visualjunk')
+  })
+
+  it('无 annotation 的裸 .katex span：删除兜底（同旧语义）', () => {
     const p = dom('<p>Hello <span class="katex">x²junk</span> world</p>').querySelector('p')!
     expect(elementKeyText(p)).toBe('helloworld')
   })
@@ -72,10 +82,24 @@ describe('locateCiteTargets', () => {
     ])
   })
 
-  it('katex 子树内容不参与匹配', () => {
+  it('无 annotation 的 .katex 视觉内容不参与匹配（删除兜底）', () => {
     const root = dom('<p>secret formula <span class="katex">E=mc^2 uniquejunk</span></p>')
     expect(locateCiteTargets(root, ['uniquejunk'])).toHaveLength(0)
     expect(locateCiteTargets(root, ['secret formula'])).toHaveLength(1)
+  })
+
+  it('oracle：snippet 含 LaTeX（$d_{k}$ 剥定界符后的形态）+ DOM 同段为 KaTeX annotation → 命中', () => {
+    const root = dom(
+      '<p>While for small values of <span class="katex"><span class="katex-mathml"><math><annotation encoding="application/x-tex">d_{k}</annotation></math></span><span class="katex-html">VISUAL-JUNK</span></span> the two attentions perform similarly.</p>',
+    )
+    expect(locateCiteTargets(root, ['for small values of d_{k} the two'])).toHaveLength(1)
+  })
+
+  it('oracle：snippet 裸数学 d _ { k } 原样 + DOM 同段为 KaTeX annotation d_{k} → 两侧归一化均为 dk → 命中', () => {
+    const root = dom(
+      '<p>While for small values of <span class="katex"><span class="katex-mathml"><math><annotation encoding="application/x-tex">d_{k}</annotation></math></span><span class="katex-html">VISUAL-JUNK</span></span> the two attentions perform similarly.</p>',
+    )
+    expect(locateCiteTargets(root, ['for small values of  d _ { k } the two'])).toHaveLength(1)
   })
 
   it('归一化为空的 snippet 视为未命中跳过', () => {

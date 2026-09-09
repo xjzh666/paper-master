@@ -223,18 +223,19 @@ def get_content(paper_id: str) -> str:
 
 
 # ── chunks-index（P3 引用定位数据）────────────────────────────────────
-_MATH_DISPLAY_RE = re.compile(r"\$\$.*?\$\$", re.DOTALL)
-_MATH_INLINE_RE = re.compile(r"\$.*?\$", re.DOTALL)
+_MATH_DISPLAY_RE = re.compile(r"\$\$(.*?)\$\$", re.DOTALL)
+_MATH_INLINE_RE = re.compile(r"\$(.*?)\$", re.DOTALL)
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _SNIPPET_MAX_CHARS = 80
 _SNIPPET_MAX_COUNT = 6
 
 
 def _snippet_for_block(text: str) -> str:
-    """text 块 → 定位片段：剥成对数学区段（先 $$..$$ 后 $..$，非贪婪）
+    """text 块 → 定位片段：剥数学定界符保留内容（先 $$..$$ 后 $..$，非贪婪；
+    公式以 LaTeX 源形态参与匹配，与前端 KaTeX annotation 对称）
     → 剥 HTML 标签 → 去首尾空白 → 截前 80 字符。剥离后为空返回空串。"""
-    text = _MATH_DISPLAY_RE.sub("", text)
-    text = _MATH_INLINE_RE.sub("", text)
+    text = _MATH_DISPLAY_RE.sub(r"\1", text)
+    text = _MATH_INLINE_RE.sub(r"\1", text)
     text = _HTML_TAG_RE.sub("", text)
     return text.strip()[:_SNIPPET_MAX_CHARS]
 

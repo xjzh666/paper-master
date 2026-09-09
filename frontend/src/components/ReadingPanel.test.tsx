@@ -24,11 +24,14 @@ const MD = [
   '## Method',
   '',
   'Method paragraph describing training.',
+  '',
+  'While for small values of $d_{k}$ the two attentions perform similarly.',
 ].join('\n')
 
 const CHUNKS: ChunkIndexEntry[] = [
   { id: 'chunk_1', page: 3, section: 'Intro', snippets: ['Paragraph text about the system', 'item one text'] },
   { id: 'chunk_2', page: 5, section: 'Method', snippets: ['Method paragraph describing'] },
+  { id: 'chunk_3', page: 7, section: 'Method', snippets: ['for small values of d_{k} the two'] },
 ]
 
 const NO_HIT_MSG = '未在原文中定位到该片段'
@@ -169,6 +172,17 @@ describe('ReadingPanel 引用定位', () => {
     expect(message.info).toHaveBeenCalledWith(NO_HIT_MSG)
     expect(vi.mocked(Element.prototype.scrollIntoView)).not.toHaveBeenCalled()
     expect(container.querySelector('.cite-flash')).toBeNull()
+  })
+
+  it('公式密集段回归：snippet 含 LaTeX d_{k} + DOM 同段为 KaTeX 渲染（annotation）→ 命中且不弹 toast', async () => {
+    await renderPanel({ chunkIndex: CHUNKS, citeTarget: { chunkId: 'chunk_3', seq: 1 } })
+    // $d_{k}$ 经共享渲染栈产出真 KaTeX span，annotation 为原始 LaTeX 源 d_{k}
+    const p = findP('for small values of')
+    expect(p.querySelector('.katex annotation')?.textContent).toBe('d_{k}')
+    expect(p.classList.contains('cite-flash')).toBe(true)
+    expect(container.querySelectorAll('.cite-flash')).toHaveLength(1)
+    expect(message.info).not.toHaveBeenCalled()
+    expect(vi.mocked(Element.prototype.scrollIntoView)).toHaveBeenCalledTimes(1)
   })
 
   it('chunkIndex 为 null 时 citeTarget 触发也安全（null props 防御）', async () => {

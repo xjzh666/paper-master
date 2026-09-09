@@ -3,7 +3,9 @@
  *
  * 归一化规则（snippet 与 DOM textContent 两侧同规则）：
  * lowercase + 移除所有空白 + 移除 ASCII 标点 `.,;:!?(){}[]<>"'`~@#$%^*+=|\/-_`（逐字符，含连字符与下划线）。
- * DOM 侧取元素 textContent 时排除 `.katex` 子树（公式渲染产物不参与匹配）。
+ * DOM 侧 `.katex` 子树替换为其 MathML annotation 的 LaTeX 源（`d_{k}` 等）参与归一化，
+ * 视觉层 `.katex-html` 文本丢弃；无 annotation 时删除兜底——与 snippet 侧「剥 $ 定界符保留
+ * LaTeX 内容」对称，两侧数学归一化后语义一致（$d_{k}$ / 裸 d _ { k } / annotation 均 → dk）。
  */
 
 /** lowercase + 移除所有空白 + 移除标点集（逐字符；`-` 转义避免被解析为字符范围） */
@@ -13,10 +15,12 @@ export function normalizeKey(s: string): string {
   return s.toLowerCase().replace(STRIP_RE, '')
 }
 
-/** 取元素 textContent（排除 .katex 子树）并归一化 */
+/** 取元素 textContent（.katex 子树替换为其 annotation 的 LaTeX 源，无 annotation 删除兜底）并归一化 */
 export function elementKeyText(el: Element): string {
   const clone = el.cloneNode(true) as Element
-  clone.querySelectorAll('.katex').forEach((k) => k.remove())
+  clone.querySelectorAll('.katex').forEach((k) => {
+    k.replaceWith(k.querySelector('annotation')?.textContent ?? '')
+  })
   return normalizeKey(clone.textContent ?? '')
 }
 
