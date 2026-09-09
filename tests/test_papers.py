@@ -528,6 +528,19 @@ def test_snippet_for_block_bare_math_untouched():
 def test_snippet_for_block_unpaired_dollar_keeps_content():
     # "$5 and $10" pairs as one math span; new semantics keeps inner content
     assert papers._snippet_for_block("a $5 and $10 b") == "a 5 and 10 b"
+    # a lone $ pairs with nothing: not a math span, text kept as-is
+    assert papers._snippet_for_block("a $5 b") == "a $5 b"
+
+
+def test_snippet_for_block_math_angle_brackets_survive_html_strip():
+    # regression: math content containing < / > must not be swallowed as
+    # fake HTML tags (real tags like <b> are stripped first, then $ delims)
+    assert papers._snippet_for_block(
+        "for $d_k < n$ we have attention if $m > 0$ works"
+    ) == "for d_k < n we have attention if m > 0 works"
+    assert papers._snippet_for_block(
+        "We find $a < b$ in <b>Table</b> notes"
+    ) == "We find a < b in Table notes"
 
 
 def test_get_chunks_index_caps_snippets_at_six(tmp_path):

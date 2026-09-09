@@ -225,18 +225,21 @@ def get_content(paper_id: str) -> str:
 # ── chunks-index（P3 引用定位数据）────────────────────────────────────
 _MATH_DISPLAY_RE = re.compile(r"\$\$(.*?)\$\$", re.DOTALL)
 _MATH_INLINE_RE = re.compile(r"\$(.*?)\$", re.DOTALL)
-_HTML_TAG_RE = re.compile(r"<[^>]+>")
+# 只匹配「真」HTML 标签（标签名以字母开头，如 <b>/</sub>/<img ...>）。
+# 宽松的 <[^>]+> 会把数学里的 `< n$ ... >` 当假标签，从 `<` 吞到下一个 `>`。
+_HTML_TAG_RE = re.compile(r"</?[a-zA-Z][^>]*>")
 _SNIPPET_MAX_CHARS = 80
 _SNIPPET_MAX_COUNT = 6
 
 
 def _snippet_for_block(text: str) -> str:
-    """text 块 → 定位片段：剥数学定界符保留内容（先 $$..$$ 后 $..$，非贪婪；
+    """text 块 → 定位片段：先剥 HTML 标签（真标签；顺序在前，数学仍带 $ 定界，
+    其中的 <、> 不会被误吞）→ 再剥数学定界符保留内容（先 $$..$$ 后 $..$，非贪婪；
     公式以 LaTeX 源形态参与匹配，与前端 KaTeX annotation 对称）
-    → 剥 HTML 标签 → 去首尾空白 → 截前 80 字符。剥离后为空返回空串。"""
+    → 去首尾空白 → 截前 80 字符。剥离后为空返回空串。"""
+    text = _HTML_TAG_RE.sub("", text)
     text = _MATH_DISPLAY_RE.sub(r"\1", text)
     text = _MATH_INLINE_RE.sub(r"\1", text)
-    text = _HTML_TAG_RE.sub("", text)
     return text.strip()[:_SNIPPET_MAX_CHARS]
 
 
