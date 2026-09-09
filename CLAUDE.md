@@ -54,7 +54,7 @@ frontend/                # Web 前端（React + TypeScript + Ant Design + Vite�
   │   └── ...
   ├── scripts/           # math-coverage.mjs：公式覆盖率校验（raw → remark-math → raw-HTML → KaTeX 渲染计数）
   └── dist/              # 构建产物（npm run build 输出，server.py 静态托管）
-tests/                   # 277 个 Python 测试 + 39 个前端 vitest，全过
+tests/                   # 281 个 Python 测试 + 43 个前端 vitest，全过
 config.example.yaml      # 配置模板（提交）
 config.yaml              # 实际配置（gitignore）
 .venv/                   # 虚拟环境（gitignore）
@@ -318,8 +318,8 @@ paper-web                              # 一键启动 Web 版（激活 venv + �
 cd frontend && npm run dev              # 前端开发模式（Vite HMR，需后端已起）
 cd frontend && npm run build            # 构建前端到 dist/（server.py 静态托管）
 
-python3 -m pytest tests/ -v                   # Python 测试 (277)
-cd frontend && npx vitest run                 # 前端 vitest (39)
+python3 -m pytest tests/ -v                   # Python 测试 (281)
+cd frontend && npx vitest run                 # 前端 vitest (43)
 python3 -m paper_reader.math_quality paper.md        # 数学质量分析（OCR/编码/污染）
 python3 -m paper_reader.math_quality paper.md --fix out.md  # 输出清洗后的 md
 cd frontend && node scripts/math-coverage.mjs out.md      # 公式覆盖率校验
