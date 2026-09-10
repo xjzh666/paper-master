@@ -1,0 +1,23 @@
+# Paper Master — 关键设计决策（decisions）
+
+决策全文的唯一真源。编号稳定（别处以 #N 引用，如 CLAUDE.md 路线图、代码注释），只增不改号；废弃的决策标注而不删除。CLAUDE.md 只保留编号索引。
+
+1. **PDF 解析**：MinerU CLI（`mineru -p file -o dir -m auto`）的子进程调用，自动启停本地 API 服务，输出 content_list_v2.json
+2. **检索策略**：BGE-M3 混合检索（dense + sparse）。dense 覆盖语义匹配，sparse 覆盖术语精确匹配。numpy 暴力 cosine similarity，无外部向量数据库。alises + 标准化标签（Roman→Arabic + 中文）辅助精确引用
+3. **RAG 定位**：RAG 应作为 Agent 可调用的工具，而非整个系统的核心流程。Agent 决定什么时候需要检索，不强制每轮走 RAG
+4. **路由规则**：检索窗口中包含图片/表格 → vision 模型；纯文字 → text 模型。路由日志 `[路由: vision/text]` 开箱可见。未来 Query Router 将区分定位/理解/比较三类问题
+5. **系统提示词**：两个模型共用一个 SYSTEM_PROMPT。工具调用参数用英文（论文是英文，检索匹配更好），最终回答用中文
+6. **缓存策略**：PDF 内容 sha256 → `~/.cache/paper-master/{hash}.json`（含 blocks + chunks + embeddings + lexical_weights + aliases）+ `{hash}-memory.json`（Paper Memory，独立文件用于生命周期解耦）+ `{hash}-history.json`（对话历史）+ `{hash}-observations.json`（session 观察，随 history 清空）+ `{hash}-images.json`（图像描述，论文级不清）。MinerU 原始输出留在 `~/.cache/paper-master/mineru-output/`（持久化，不自动清理）。batch 分三阶段（MinerU 解析 → BGE-M3 编码 → Memory 抽取）
+7. **图片加载**：ContentBlock.image_bytes 懒加载，仅 LLM 需要时才读文件
+8. **暂不引入 LangChain/LangGraph**：当前是简单流水线。后续 Agent 框架再评估，在此之前的工具化用纯函数接口
+9. **旧 parser.py 保留不动**，mineru_parser.py 是主要解析路径
+10. **Paper Memory**：论文理解不止依赖 chunk embedding，LLM 一次性抽取 10 个结构化字段（研究问题、动机、方法、实验、局限、关键词等），存入独立缓存。当前单论文直接注入 system prompt，后续多论文时改造为 Agent 工具按需调用。关键词留作多论文路由筛选
+11. **Tool Result 压缩**：不增加额外 API 调用，利用 LLM 同一轮的多工具调用能力（record_observation + search_paper 在同一个 tool_calls 里发出）。保留最近 `KEEP_RECENT_ROUNDS=3` 轮完整（保证模型能回读证据，避免"证据被压后反复重搜"），更早的替换为 observation 摘要，无 observation 时降级为智能截断。压缩阈值必须严格保证"工具结果在第一次被模型读到前完整"（曾有 off-by-one bug）
+12. **三层记忆架构**：L1 Conversation Memory（messages，最新轮完整，往轮压缩）、L2 Observation Memory（结构化观察，session 级存 `ctx.observations` 并落盘，注入最近 20 条）、L3 Evidence Memory（来源追溯，Observation.sources 字段已就绪，P3 完善）
+13. **桌面形态从 Tauri 改为 Web 应用**：早期定 Tauri，后改为纯 Web 应用（React+Vite 前端 + FastAPI 单端口静态托管 + `paper-web` 命令一键启动）。理由：GPU 与 Zotero 数据都在 WSL2，浏览器天然跨 Windows/WSL 边界（无需 WSLg）；免装 Rust 工具链；单端口部署简单。代价：无系统托盘/原生窗口，但当前功能（读 PDF + 对话）浏览器足够。启动命令 `paper-web` 是 `~/.local/bin/paper-web` 脚本（激活 venv + 拉起 uvicorn + 开浏览器），旧 `launch.bat` 双击方案已废弃
+14. **静态托管挂在 `/`**：`server.py` 的 `create_app(data_dir=None, frontend_dist=None)` 在**所有 API 路由之后** `mount("/", StaticFiles(html=True))`（默认指向 `frontend/dist`）。FastAPI 按注册顺序匹配，API 路由优先，前端 SPA 兜底。`frontend_dist` 可显式传入（测试用临时目录），dist 不存在时静默跳过（纯 API 模式不受影响）
+15. **`paper-web` 一键启动 + 两个启动前置**：启动命令是 `~/.local/bin/paper-web` bash 脚本（`cd` 项目 + `source .venv/bin/activate` + 后台 `explorer.exe` 开浏览器 + `exec uvicorn`），任意目录可敲、无参数。两个易踩的坑：① **前端 `npm run build` 是首次启动前置**——`frontend/dist/` 不存在时 server.py 静默跳过静态托管，根路径 `/` 返回 404（需构建后重启后端才生效）；② **Zotero sqlite 连接必须 `check_same_thread=False`**——`get_library` 是带 yield 的同步依赖，FastAPI 线程池里创建连接与执行查询在不同线程，默认 `check_same_thread=True` 会报 `SQLite objects created in a thread can only be used in that same thread`；只读连接（`mode=ro`）+ `sqlite3.threadsafety=1`（serialized）下关掉检查是安全的。旧 `launch.bat`（需 CRLF + 纯 ASCII）已废弃
+16. **中间产物落盘原则：可重建的不存，不可重建的才存**（2026-09-01）— `search_paper`/`get_section` 的检索原文不落盘（chunk 索引本身就是持久化 + 检索层，BGE-M3 本地重查免费）；只落盘模型产物：session observations（跨提问证据链，`{sha}-observations.json` 全量 append 不去重，prompt 只注入最近 20 条）和 `describe_image` 图像描述（`{sha}-images.json`，论文级，key 用图片相对路径——resource id 尾号是当次枚举序号，跨调用不稳定）。观察注入带「未经复核」标注，定位为线索而非事实；记录标准是"有独立价值的事实即使与当次问题无关也记"，sources 必填。observations 与 history 同生同灭，图像描述独立存在。spec: `docs/superpowers/specs/2026-09-01-session-observation-design.md`
+17. **章节层级以编号深度为准**：MinerU 可能把父子节标题标成同一 level（如全部 level 2），`find_section` 因此用编号深度（`6` < `6.1` < `6.1.1`）计算有效层级，无编号标题退回 parser level；heading-only 的匹配结果兜底顺延后续块（2000 字上限）。注意 `merge_blocks` 的 `section_path` 仍按原始 level 截断（平层级解析下路径也是平的），目前无读取方，暂未修
+18. **P3 引用溯源：引用即文本**：chunk 是引用的统一锚点。链路：检索文本带 `[src chunk_N §标题 p.页]` 标签 → system prompt 要求回答内嵌 `[§x.x p.N](cite:chunk_N)` 链接（编号只能取上下文中可见的 [src] 标签）——链接就是普通 markdown 文本，SSE 通道与历史持久化零协议改动 → 前端 ChatPanel 的 urlTransform 放行 `cite:` scheme，点击后 App 按 chunks-index 定位，DOM 归一化匹配（两侧同规则剥空白/标点，snippet 侧只剥 `$`/`$$` 定界符保留公式 LaTeX 内容，DOM 侧 `.katex` 子树替换为其 MathML annotation 的 LaTeX 源参与归一化——无 annotation 时删除兜底，多处命中取最深元素）。已知限制：早期轮次工具结果被压缩移除 [src] 标签后，对应 chunk 不再可引用（prompt 约束宁可不加链接）
+19. **P6 方向：外部搜索先行、wiki 按需形成**（2026-09-10）— 最终目标"自主调研 + 多论文对比"分解为搜索与持久化研究记忆两块：P6.1 外部论文搜索先做最小可用闭环（查询→列表→PDF→现有流程），多源不做深；P6.2 llmwiki 战略原则：不替代外部搜索、按研究问题按需形成知识（不做打开论文全量 ingest，Paper Memory 不变）、跨论文综合由比较/研究问题驱动。机制层（升格路径、merge 策略等）留待专项设计。灵感来源：Karpathy LLM Wiki（`docs/llm-wiki.md`，本地未入库）；对照实现：TencentDB Agent Memory wiki 引擎（服务端全自动摄取）、claude-obsidian（vault 事务/溯源）
