@@ -197,13 +197,13 @@ LLMToolResponse       — LLM 返回解析 {text, tool_calls}
 
 ## 进行中
 
-- **P4 后续：本地知识库（下一版）** — Web 应用 MVP 已可用（列表→打开→解析→对话→阅读）；下一版把多论文统一索引做成本地知识库（见下一步优先级）
+- **P6：自主调研（新方向）** — Web 应用 MVP 已可用（列表→打开→解析→对话→阅读）；当前转向自主调研能力：外部论文搜索（P6.1）→ llmwiki 知识库（P6.2），见下一步优先级
 
 ## 下一步优先级
 
-核心转向：从"更好的论文问答 RAG" → "能理解论文、查论文、思考 idea 的科研 Agent"。
+核心转向：从"更好的论文问答 RAG" → "能自主调研、多论文对比的科研 Agent"。
 
-不再把检索做得更精细，而是让 Agent 真正理解论文内容，能跨章节推理。
+不再把检索做得更精细。自主调研的能力分解：**搜索**（拿得到论文，P6.1）+ **理解**（持久化研究记忆，P6.2）+ **对比**（跨论文综合，P6.2）。
 
 ### P0：RAG 工具化 ✅ 已完成
 
@@ -246,7 +246,7 @@ LLMToolResponse       — LLM 返回解析 {text, tool_calls}
 
 ### P4：Web 应用（当前方向，MVP 已完成）
 
-核心目标转向：把 paper-master 做成**本地 Web 应用**（类似 Zotero），对接 Zotero 库里的论文，浏览器访问 `localhost:8000` 单端口使用。**暂不做"上网搜论文"**。
+核心目标转向：把 paper-master 做成**本地 Web 应用**（类似 Zotero），对接 Zotero 库里的论文，浏览器访问 `localhost:8000` 单端口使用。（当时**暂缓"上网搜论文"**，现已作为 P6.1 提前，见下一步优先级。）
 
 **已确认的技术选型：**
 - 形态：**Web 应用**（不再用 Tauri，理由见关键设计决策 #13）
@@ -262,15 +262,32 @@ LLMToolResponse       — LLM 返回解析 {text, tool_calls}
 - [x] `papers.py` 会话仓库 + 异步解析 + SSE 对话
 - [x] React 前端：论文列表 + 收藏夹树 + 阅读区（markdown 渲染）+ 对话区
 - [x] 生产静态托管（单端口）+ `paper-web` 命令
-- [ ] **本地知识库：多论文统一索引（下一版）** — 当前单论文会话；下一版做跨论文检索/统一索引
+- [ ] **本地知识库：多论文统一索引** — 由 P6.2（llmwiki 知识库）实现，见下一步优先级
+
+### P6：自主调研（新方向）
+
+最终目标：Agent 能自主做调研、多论文对比。
+
+#### P6.1 外部论文搜索（下一步优先）
+
+摆脱 Zotero 本地库限制，按查询获取外部论文。**先做最小可用闭环：查询 → 结果列表 → 获取原文 PDF → 进入现有解析/阅读/对话流程**；论文源扩展与复杂排序后置。候选源（arXiv / Semantic Scholar / OpenAlex 等）与选型在专项设计 spec 中定，避免多源同时做深。（此条反转早期"明确暂不做上网搜论文"的决策，理由：自主调研目标下本地库覆盖不了获取端。）
+
+#### P6.2 llmwiki 知识库（P6.1 之后）
+
+把 LLM Wiki 思想（Karpathy）融入项目，作为原"本地知识库：多论文统一索引"的架构方案。战略原则：
+
+- Wiki 是持久化研究记忆，**不替代外部搜索**（与 P6.1 互补）
+- 默认按研究问题**按需形成知识**，不做打开论文时的全量 ingest（Paper Memory 现状不变）
+- **跨论文综合**（comparison/synthesis 页）在比较类问题、研究问题驱动下产生
+
+参考资料（本地，未入库）：`docs/llm-wiki.md`（Karpathy 原文）、`docs/TencentDB-Agent-Memory-feat-server_team/`（服务端 wiki 引擎参考）、`docs/claude-obsidian-main/`（vault 事务与溯源参考）。具体机制（知识升格路径、页面 merge/锁定策略、schema 页面类型等）待独立 designing，不在路线图层绑定。
 
 ### P5：暂缓
 
-以下功能暂缓，等 Web 应用稳定后再评估：
-- [ ] 上网搜论文（文献搜索）——**明确暂不做**
+以下功能暂缓：
 - [ ] 多轮对话 query rewriting（代词和省略会降低检索精度）
 - [ ] 检索语义 section 过滤（"找实验结果"而非"找相似文本"）
-- [ ] 多论文对比（/load + /compare）
+- [ ] 多论文对比（/load + /compare）— 由 P6.2（跨论文综合）覆盖
 - [ ] AnthropicClient 的 base_url 支持
 
 ## 用户当前配置
@@ -301,6 +318,7 @@ LLMToolResponse       — LLM 返回解析 {text, tool_calls}
 16. **中间产物落盘原则：可重建的不存，不可重建的才存**（2026-09-01）— `search_paper`/`get_section` 的检索原文不落盘（chunk 索引本身就是持久化 + 检索层，BGE-M3 本地重查免费）；只落盘模型产物：session observations（跨提问证据链，`{sha}-observations.json` 全量 append 不去重，prompt 只注入最近 20 条）和 `describe_image` 图像描述（`{sha}-images.json`，论文级，key 用图片相对路径——resource id 尾号是当次枚举序号，跨调用不稳定）。观察注入带「未经复核」标注，定位为线索而非事实；记录标准是"有独立价值的事实即使与当次问题无关也记"，sources 必填。observations 与 history 同生同灭，图像描述独立存在。spec: `docs/superpowers/specs/2026-09-01-session-observation-design.md`
 17. **章节层级以编号深度为准**：MinerU 可能把父子节标题标成同一 level（如全部 level 2），`find_section` 因此用编号深度（`6` < `6.1` < `6.1.1`）计算有效层级，无编号标题退回 parser level；heading-only 的匹配结果兜底顺延后续块（2000 字上限）。注意 `merge_blocks` 的 `section_path` 仍按原始 level 截断（平层级解析下路径也是平的），目前无读取方，暂未修
 18. **P3 引用溯源：引用即文本**：chunk 是引用的统一锚点。链路：检索文本带 `[src chunk_N §标题 p.页]` 标签 → system prompt 要求回答内嵌 `[§x.x p.N](cite:chunk_N)` 链接（编号只能取上下文中可见的 [src] 标签）——链接就是普通 markdown 文本，SSE 通道与历史持久化零协议改动 → 前端 ChatPanel 的 urlTransform 放行 `cite:` scheme，点击后 App 按 chunks-index 定位，DOM 归一化匹配（两侧同规则剥空白/标点，snippet 侧只剥 `$`/`$$` 定界符保留公式 LaTeX 内容，DOM 侧 `.katex` 子树替换为其 MathML annotation 的 LaTeX 源参与归一化——无 annotation 时删除兜底，多处命中取最深元素）。已知限制：早期轮次工具结果被压缩移除 [src] 标签后，对应 chunk 不再可引用（prompt 约束宁可不加链接）
+19. **P6 方向：外部搜索先行、wiki 按需形成**（2026-09-10）— 最终目标"自主调研 + 多论文对比"分解为搜索与持久化研究记忆两块：P6.1 外部论文搜索先做最小可用闭环（查询→列表→PDF→现有流程），多源不做深；P6.2 llmwiki 战略原则：不替代外部搜索、按研究问题按需形成知识（不做打开论文全量 ingest，Paper Memory 不变）、跨论文综合由比较/研究问题驱动。机制层（升格路径、merge 策略等）留待专项设计。灵感来源：Karpathy LLM Wiki（`docs/llm-wiki.md`，本地未入库）；对照实现：TencentDB Agent Memory wiki 引擎（服务端全自动摄取）、claude-obsidian（vault 事务/溯源）
 
 ## 常用命令
 
