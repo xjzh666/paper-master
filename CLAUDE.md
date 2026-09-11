@@ -47,10 +47,12 @@ paper_reader/
   └── server.py          # FastAPI：/api/zotero/* + /api/papers/* + 前端静态托管
 docs/
   ├── architecture.md    # 架构详情（数据流 / SSE 协议 / 数据模型 / 子系统 / 数学渲染）
-  ├── decisions.md       # 关键设计决策全文（#1-#19）
+  ├── decisions.md       # 关键设计决策全文（#1-#20）
   ├── history.md         # 已完成条目完整清单
-  ├── specs/             # 功能 spec 存档（docs/specs/YYYY-MM-DD-<slug>.md）
-  └── superpowers/specs/ # 设计 spec 存档（同源格式）
+  ├── deep-research-report.md          # 论文源 API 调研报告（15 源横评，2026-09）
+  ├── openalex-deep-research-report.md # OpenAlex API 专项调研报告
+  ├── superpowers/specs/ # 历史 spec 存档（superpowers 工作流时期）
+  └── onegate/specs/     # 设计 spec 存档（现行，YYYY-MM-DD-<slug>.md）
 frontend/                # Web 前端（React + TypeScript + Ant Design + Vite）
   ├── src/               # 三栏 App + citation.ts（引用定位）+ markdown/ 共享插件栈（详见 architecture.md）
   ├── scripts/           # math-coverage.mjs 公式覆盖率校验
@@ -99,7 +101,7 @@ papers/                  # 测试用 PDF 论文（gitignore）
 
 #### P6.1 外部论文搜索（下一步优先）
 
-摆脱 Zotero 本地库限制，按查询获取外部论文。**先做最小可用闭环：查询 → 结果列表 → 获取原文 PDF → 进入现有解析/阅读/对话流程**；论文源扩展与复杂排序后置。候选源（arXiv / Semantic Scholar / OpenAlex 等）与选型在专项设计 spec 中定，避免多源同时做深。（此条反转早期"明确暂不做上网搜论文"的决策，理由：自主调研目标下本地库覆盖不了获取端。）
+摆脱 Zotero 本地库限制，按查询获取外部论文。**先做最小可用闭环：查询 → 结果列表 → 获取原文 PDF → 进入现有解析/阅读/对话流程**。选型已定（决策 #20）：arXiv 单源起步，OpenAlex 预留第二源（本期不接），Semantic Scholar 排除。设计 spec：`docs/onegate/specs/2026-09-11-external-paper-search.md`（待实现）。（此条反转早期"明确暂不做上网搜论文"的决策，理由：自主调研目标下本地库覆盖不了获取端。）
 
 #### P6.2 llmwiki 知识库（P6.1 之后）
 
@@ -148,6 +150,7 @@ papers/                  # 测试用 PDF 论文（gitignore）
 17. **章节层级以编号深度为准** — find_section 有效层级计算
 18. **P3 引用溯源：引用即文本** — cite:chunk_N 链接 + DOM 归一化匹配
 19. **P6 方向：外部搜索先行、wiki 按需形成**（2026-09-10）
+20. **P6.1 论文源选型：arXiv 起步，OpenAlex 预留，S2 排除**（2026-09-11）
 
 ## 常用命令
 
