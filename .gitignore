@@ -5,6 +5,7 @@ __pycache__/
 venv/
 dist/
 .claude/worktrees/
+.claude/settings.local.json
 .agent/
 *.egg-info/
 CLAUDE.md
