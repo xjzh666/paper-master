@@ -45,6 +45,19 @@ export interface ChunkIndexEntry {
   snippets: string[]
 }
 
+/** 一条 arXiv 检索结果（9 字段与后端 arxiv_search.ArxivResult dataclass 对齐） */
+export interface ArxivResult {
+  arxiv_id: string
+  title: string
+  authors: string[]
+  abstract: string
+  published: string
+  updated: string
+  categories: string[]
+  pdf_url: string
+  abs_url: string
+}
+
 async function get<T>(url: string): Promise<T> {
   const res = await fetch(url)
   if (!res.ok) throw new Error(`GET ${url} → ${res.status}`)
@@ -57,6 +70,27 @@ export const api = {
     get<ZoteroItem[]>(`/api/zotero/items${collectionId ? `?collection_id=${collectionId}` : ''}`),
   search: (q: string) =>
     get<ZoteroItem[]>(`/api/zotero/search?q=${encodeURIComponent(q)}`),
+  arxivSearch: async (q: string, maxResults?: number) => {
+    const url = `/api/arxiv/search?q=${encodeURIComponent(q)}${maxResults ? `&max_results=${maxResults}` : ''}`
+    const res = await fetch(url)
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ detail: `GET ${url} → ${res.status}` }))
+      throw new Error(body.detail) // 错误文案对齐后端 detail（"arXiv 检索失败: ..."）
+    }
+    return res.json() as Promise<{ results: ArxivResult[] }>
+  },
+  openArxivPaper: (arxivId: string) =>
+    fetch('/api/arxiv/open', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ arxiv_id: arxivId }),
+    }).then(async (res) => {
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ detail: `POST /api/arxiv/open → ${res.status}` }))
+        throw new Error(body.detail) // 502/400/500 的 detail 直接抛出，不能当成功
+      }
+      return res.json() as Promise<OpenResult>
+    }),
   openPaper: (zoteroItemId: number) =>
     fetch('/api/papers/open', {
       method: 'POST',

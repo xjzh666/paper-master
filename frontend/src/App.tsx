@@ -4,7 +4,7 @@ import PaperListSidebar from './components/PaperListSidebar'
 import ChatPanel from './components/ChatPanel'
 import ReadingPanel from './components/ReadingPanel'
 import { api } from './api/client'
-import type { PaperOverview, ZoteroItem, ChunkIndexEntry } from './api/client'
+import type { PaperOverview, ZoteroItem, ChunkIndexEntry, ArxivResult, OpenResult } from './api/client'
 
 const { Sider, Content } = Layout
 
@@ -41,7 +41,8 @@ export default function App() {
     setStatus('ready')
   }
 
-  const openPaper = async (item: ZoteroItem) => {
+  /** 打开论文公共流转：重置状态 → open → ready 直载 / 否则轮询（Zotero 与 arXiv 共用） */
+  const openWith = async (open: () => Promise<OpenResult>) => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
     setPaperId(null)
     setOverview(null)
@@ -51,7 +52,7 @@ export default function App() {
     setCiteTarget(null)
     setStatus('parsing')
     try {
-      const res = await api.openPaper(item.item_id)
+      const res = await open()
       setPaperId(res.paper_id)
       paperIdRef.current = res.paper_id
       if (res.status === 'ready') {
@@ -64,6 +65,9 @@ export default function App() {
       setStatus('error')
     }
   }
+
+  const openPaper = (item: ZoteroItem) => openWith(() => api.openPaper(item.item_id))
+  const openArxivPaper = (item: ArxivResult) => openWith(() => api.openArxivPaper(item.arxiv_id))
 
   const pollStatus = (pid: string) => {
     if (pollRef.current) clearInterval(pollRef.current)
@@ -101,7 +105,7 @@ export default function App() {
   return (
     <Layout style={{ height: '100vh' }}>
       <Sider width={320} theme="light" style={{ borderRight: '1px solid #eee', overflow: 'auto' }}>
-        <PaperListSidebar onOpen={openPaper} />
+        <PaperListSidebar onOpen={openPaper} onOpenArxiv={openArxivPaper} />
       </Sider>
       <Content style={{ padding: 16, borderRight: '1px solid #eee' }}>
         <ChatPanel paperId={paperId} disabled={status !== 'ready'} onCite={handleCite} />
