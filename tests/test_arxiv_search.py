@@ -140,6 +140,27 @@ class FakeUrlopen:
         return self.calls[-1]
 
 
+class FlakyResponse:
+    """urlopen 返回值替身：read 先返回一块数据，之后抛错（模拟流中途连接重置）。"""
+
+    def __init__(self, first_chunk: bytes, error: Exception):
+        self._first_chunk = first_chunk
+        self._error = error
+        self._served = False
+
+    def read(self, size: int = -1) -> bytes:
+        if not self._served:
+            self._served = True
+            return self._first_chunk
+        raise self._error
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+
 class FakeClock:
     """打桩 time：monotonic 返回可控时钟；sleep 记录时长并推进时钟（不真睡）。"""
 
@@ -279,6 +300,33 @@ class TestDownloadPdf:
         assert result == existing
         assert result.read_bytes() == b"cached bytes"  # 不覆盖已有文件
         assert fake_clock.sleeps == []  # 缓存命中不过闸（网络调用才限速）
+
+    def test_mid_stream_failure_does_not_poison_cache(
+        self, monkeypatch, tmp_path, fake_clock
+    ):
+        """流中途失败：① dest 不留半截文件（缓存不得被毒化），
+        ② 异常向上传播，③ 重试能重新下载成功。"""
+        error = ConnectionResetError("connection reset mid-stream")
+
+        def flaky_urlopen(request, timeout=None):
+            return FlakyResponse(b"%PDF-1.4 truncated prefix", error)
+
+        monkeypatch.setattr("urllib.request.urlopen", flaky_urlopen)
+
+        dest = tmp_path / "1706.03762.pdf"
+        with pytest.raises(ConnectionResetError):  # ② 异常向上传播
+            download_pdf("1706.03762", tmp_path)
+
+        assert not dest.exists()  # ① 不留截断 PDF
+        assert list(tmp_path.iterdir()) == []  # .part 临时文件也清理，无残留
+
+        # ③ 再次调用能重新下载成功，内容完整
+        monkeypatch.setattr(
+            "urllib.request.urlopen", FakeUrlopen(PDF_PAYLOAD, chunk_limit=7)
+        )
+        result = download_pdf("1706.03762", tmp_path)
+        assert result == dest
+        assert result.read_bytes() == PDF_PAYLOAD
 
 
 # ---------------------------------------------------------------------------

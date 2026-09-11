@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import os
 import re
 import threading
 import time
@@ -80,9 +81,17 @@ def download_pdf(arxiv_id: str, dest_dir: str | Path) -> Path:
         return dest
 
     url = PDF_URL_TEMPLATE.format(arxiv_id=arxiv_id)
-    with _open(url) as response, open(dest, "wb") as fh:
-        while chunk := response.read(_CHUNK_SIZE):
-            fh.write(chunk)
+    # 原子写：先落 .part，全部写成功后 os.replace；流中途失败时清理 .part
+    # 并上抛，dest 不落盘——避免截断 PDF 留在缓存路径上被 exists 早退永久命中。
+    tmp = dest.with_name(dest.name + ".part")
+    try:
+        with _open(url) as response, open(tmp, "wb") as fh:
+            while chunk := response.read(_CHUNK_SIZE):
+                fh.write(chunk)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    os.replace(tmp, dest)
     return dest
 
 
