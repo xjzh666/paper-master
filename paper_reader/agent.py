@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+import paper_reader.arxiv_search as arxiv_search
 from paper_reader.blocks import ContentBlock, PaperDocument, PaperMemory, SemanticChunk
 from paper_reader.observations import load_image_descriptions, save_image_descriptions
 
@@ -307,6 +308,20 @@ def _make_tools(ctx, vision_client, resources_store: dict, observations_store: l
             parts.append("关键事实: " + "; ".join(facts))
         return ToolResult(text="\n".join(parts))
 
+    def search_external_papers(query: str, max_results: int = 10) -> ToolResult:
+        # 异常不在此捕获：网络错误由 agent 循环统一兜底为 [工具执行失败: ...]
+        results = arxiv_search.search(query, max_results)
+        if not results:
+            return ToolResult(text="[外部检索无结果]")
+        lines = [
+            f"{i}. {r.title} ({r.published[:4]}) — {', '.join(r.authors)} "
+            f"[arxiv_id: {r.arxiv_id}]"
+            for i, r in enumerate(results, start=1)
+        ]
+        lines.append("")
+        lines.append("提示：可把上述 arxiv_id 提供给用户，在 Web 端打开对应论文。")
+        return ToolResult(text="\n".join(lines))
+
     return [
         Tool(
             name="search_paper",
@@ -395,6 +410,25 @@ def _make_tools(ctx, vision_client, resources_store: dict, observations_store: l
                 "required": ["summary"],
             },
             callable=record_observation,
+        ),
+        Tool(
+            name="search_external_papers",
+            description=(
+                "Search arXiv for external papers by keyword, beyond the currently open "
+                "paper and the local library. Use when the user asks to find papers or "
+                "survey a research direction (e.g. '帮我找某方向的论文'). Returns a "
+                "numbered list with title, year, authors and arxiv_id; the arxiv_id can "
+                "be given to the user to open the corresponding paper in the Web UI."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query in English (arXiv metadata is in English)"},
+                    "max_results": {"type": "integer", "description": "Maximum number of results to return, default 10"},
+                },
+                "required": ["query"],
+            },
+            callable=search_external_papers,
         ),
     ]
 

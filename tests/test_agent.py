@@ -1149,3 +1149,97 @@ def test_record_observation_sources_description_uses_src_label_format():
     desc = tool.parameters["properties"]["sources"]["description"]
     assert "chunk_" in desc
     assert "['chunk_3 §3.2 p.4']" in desc
+
+
+# ── search_external_papers tool (P6.1 外部论文搜索) ────────────────────
+
+
+def _fake_arxiv_result(arxiv_id, title, authors, published):
+    from paper_reader.arxiv_search import ArxivResult
+    return ArxivResult(
+        arxiv_id=arxiv_id, title=title, authors=authors, abstract="Abstract text.",
+        published=published, updated=published, categories=["cs.CL"],
+        pdf_url=f"https://arxiv.org/pdf/{arxiv_id}",
+        abs_url=f"https://arxiv.org/abs/{arxiv_id}",
+    )
+
+
+def _external_search_fn():
+    tools = _make_tools(FakeCtx(), FakeVisionClient(), {}, [])
+    return next(t for t in tools if t.name == "search_external_papers").callable
+
+
+def test_search_external_papers_in_tool_list():
+    """工具集含 search_external_papers，schema 有 query（必填）与 max_results（可选）。"""
+    ctx = FakeCtx()
+    tools = _make_tools(ctx, FakeVisionClient(), {}, [])
+    tool = next(t for t in tools if t.name == "search_external_papers")
+    props = tool.parameters["properties"]
+    assert props["query"]["type"] == "string"
+    assert "query" in tool.parameters["required"]
+    assert props["max_results"]["type"] == "integer"
+    assert "max_results" not in tool.parameters["required"]
+
+
+def test_search_external_papers_formats_numbered_list(monkeypatch):
+    """打桩返回 2 条 → 编号列表（标题/年份/作者/arxiv_id）+ 尾部 arxiv_id 提示；参数原样转发。"""
+    from paper_reader import arxiv_search
+    calls = []
+
+    def fake_search(query, max_results=10):
+        calls.append((query, max_results))
+        return [
+            _fake_arxiv_result("1706.03762", "Attention Is All You Need",
+                               ["A Vaswani", "N Shazeer"], "2015-06-12T00:00:00Z"),
+            _fake_arxiv_result("2005.14165", "Language Models are Few-Shot Learners",
+                               ["T Brown"], "2020-05-28T00:00:00Z"),
+        ]
+
+    monkeypatch.setattr(arxiv_search, "search", fake_search)
+    result = _external_search_fn()(query="rag", max_results=2)
+
+    assert calls == [("rag", 2)]  # (query, max_results) 原样转发
+    lines = result.text.split("\n")
+    assert lines[0] == ("1. Attention Is All You Need (2015) — "
+                        "A Vaswani, N Shazeer [arxiv_id: 1706.03762]")
+    assert lines[1] == ("2. Language Models are Few-Shot Learners (2020) — "
+                        "T Brown [arxiv_id: 2005.14165]")
+    assert lines[2] == ""  # 列表后空一行
+    assert lines[3] == "提示：可把上述 arxiv_id 提供给用户，在 Web 端打开对应论文。"
+    assert result.resources == []
+
+
+def test_search_external_papers_empty_results(monkeypatch):
+    """打桩返回空列表 → 恰为 '[外部检索无结果]'。"""
+    from paper_reader import arxiv_search
+    monkeypatch.setattr(arxiv_search, "search", lambda query, max_results=10: [])
+
+    result = _external_search_fn()(query="nonexistent topic")
+    assert result.text == "[外部检索无结果]"
+    assert result.resources == []
+
+
+def test_search_external_papers_error_becomes_tool_failure(monkeypatch):
+    """工具自身不吞异常：search 抛错由 agent 循环兜底转成 '[工具执行失败: ...]'。"""
+    from paper_reader import arxiv_search
+
+    def boom(query, max_results=10):
+        raise ConnectionError("network down")
+
+    monkeypatch.setattr(arxiv_search, "search", boom)
+
+    ctx = FakeCtx()
+    text_client = FakeTextClient(responses=[
+        LLMToolResponse(tool_calls=[{
+            "id": "call_1",
+            "name": "search_external_papers",
+            "arguments": '{"query":"rag","max_results":2}',
+        }]),
+        LLMToolResponse(text="外部检索暂时失败"),
+    ])
+    agent = PaperAgent(text_client=text_client, vision_client=FakeVisionClient(), ctx=ctx)
+
+    answer = agent.run(question="帮我找 rag 方向的论文", history=[])
+    assert answer == "外部检索暂时失败"
+    tool_msgs = [m for m in text_client.calls[1]["messages"] if m["role"] == "tool"]
+    assert tool_msgs[0]["content"] == "[工具执行失败: network down]"
