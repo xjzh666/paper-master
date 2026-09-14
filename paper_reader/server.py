@@ -74,12 +74,13 @@ def create_app(data_dir: Path | None = None,
     def arxiv_search_endpoint(q: str = Query(min_length=1),
                               max_results: int = Query(10, ge=1, le=50)):
         try:
-            results = arxiv_search.search(q, max_results=max_results)
-        except ArxivRateLimitError as e:
-            raise HTTPException(status_code=502, detail=str(e))
+            results, source = arxiv_search.search_with_fallback(
+                q, max_results=max_results)
         except Exception as e:
-            raise HTTPException(status_code=502, detail=f"arXiv 检索失败: {e}")
-        return {"results": [asdict(r) for r in results]}
+            # ArxivRateLimitError 已被 search_with_fallback 吃掉降级 OpenAlex，
+            # 走到这里说明双源皆败（open 端点下载仍会 429，那边保留专属分支）
+            raise HTTPException(status_code=502, detail=f"外部检索失败: {e}")
+        return {"results": [asdict(r) for r in results], "source": source}
 
     @app.post("/api/arxiv/open")
     def arxiv_open(body: dict):

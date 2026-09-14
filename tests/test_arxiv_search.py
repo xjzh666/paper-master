@@ -3,16 +3,18 @@
 录制片段做 fixture）；限速测试打桩 time（FakeClock），全程不真睡。"""
 import io
 from pathlib import Path
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
 import pytest
 
 import paper_reader.arxiv_search as arxiv_search
+import paper_reader.openalex_search as openalex_search
 from paper_reader.arxiv_search import (
     DEFAULT_DOWNLOAD_DIR,
     ArxivResult,
     download_pdf,
     search,
+    search_with_fallback,
 )
 
 # ---------------------------------------------------------------------------
@@ -395,6 +397,111 @@ class TestRateLimit:
 
 def test_default_download_dir_constant():
     assert DEFAULT_DOWNLOAD_DIR == Path.home() / ".local/share/paper-master/downloads"
+
+
+# ---------------------------------------------------------------------------
+# OpenAlex 降级兜底（search_with_fallback；决策 #21 扩展 D）
+# ---------------------------------------------------------------------------
+
+
+def _openalex_stub(monkeypatch, results=None, calls=None, error=None):
+    """打桩 openalex_search.search；记录调用参数，可选抛异常。"""
+
+    def fake(query, max_results=10):
+        if calls is not None:
+            calls.append((query, max_results))
+        if error is not None:
+            raise error
+        return results if results is not None else []
+
+    monkeypatch.setattr(openalex_search, "search", fake)
+
+
+def _forbid_openalex(monkeypatch):
+    def must_not_call(*args, **kwargs):
+        raise AssertionError("openalex fallback must not be triggered")
+
+    monkeypatch.setattr(openalex_search, "search", must_not_call)
+
+
+def _raiser(exc: Exception):
+    def f(query, max_results=10):
+        raise exc
+
+    return f
+
+
+class TestSearchWithFallback:
+    def test_arxiv_success_returns_arxiv_source(self, monkeypatch):
+        monkeypatch.setattr(
+            "urllib.request.urlopen", FakeUrlopen(ATTENTION_FEED.encode())
+        )
+        _forbid_openalex(monkeypatch)
+
+        results, source = search_with_fallback("attention")
+
+        assert source == "arxiv"
+        assert len(results) == 2
+
+    def test_empty_results_do_not_trigger_fallback(self, monkeypatch):
+        """空结果是成功而非失败：返回 ([], "arxiv")，不碰 OpenAlex。"""
+        monkeypatch.setattr(
+            "urllib.request.urlopen", FakeUrlopen(EMPTY_FEED.encode())
+        )
+        _forbid_openalex(monkeypatch)
+
+        results, source = search_with_fallback("no such paper exists")
+
+        assert results == []
+        assert source == "arxiv"
+
+    @pytest.mark.parametrize("raise_", [
+        arxiv_search.ArxivRateLimitError,
+        lambda: URLError("timeout"),
+        lambda: OSError("connection reset"),
+    ], ids=["rate-limit", "urlerror", "oserror"])
+    def test_arxiv_failure_falls_back_to_openalex(self, monkeypatch, raise_):
+        fallback_result = ArxivResult(
+            arxiv_id="2312.10997", title="RAPTOR", authors=["S Saroff"],
+            abstract="", published="2023", updated="", categories=[],
+            pdf_url="https://arxiv.org/pdf/2312.10997",
+            abs_url="https://arxiv.org/abs/2312.10997",
+        )
+        monkeypatch.setattr(arxiv_search, "search", _raiser(raise_()))
+        calls = []
+        _openalex_stub(monkeypatch, results=[fallback_result], calls=calls)
+
+        results, source = search_with_fallback("raptor", 5)
+
+        assert source == "openalex"
+        assert results == [fallback_result]
+        assert calls == [("raptor", 5)]  # (query, max_results) 原样转发
+
+    def test_arxiv_parse_error_falls_back_to_openalex(self, monkeypatch):
+        """真解析路径：feed 非法 XML → ET.ParseError → 兜底。"""
+        monkeypatch.setattr(
+            "urllib.request.urlopen", FakeUrlopen(b"this is not atom xml")
+        )
+        fallback_result = ArxivResult(
+            arxiv_id="2312.10997", title="RAPTOR", authors=[], abstract="",
+            published="2023", updated="", categories=[],
+            pdf_url="https://arxiv.org/pdf/2312.10997",
+            abs_url="https://arxiv.org/abs/2312.10997",
+        )
+        _openalex_stub(monkeypatch, results=[fallback_result])
+
+        results, source = search_with_fallback("raptor")
+
+        assert source == "openalex"
+        assert results == [fallback_result]
+
+    def test_openalex_failure_propagates(self, monkeypatch):
+        """arXiv 失败且 OpenAlex 也失败 → 异常透传（由调用方兜底为 502 等）。"""
+        monkeypatch.setattr(arxiv_search, "search", _raiser(URLError("arxiv down")))
+        _openalex_stub(monkeypatch, error=URLError("openalex down"))
+
+        with pytest.raises(URLError):
+            search_with_fallback("raptor")
 
 
 # ---------------------------------------------------------------------------

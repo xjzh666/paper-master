@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import paper_reader.arxiv_search as arxiv_search
+import paper_reader.openalex_search as openalex_search
 import paper_reader.papers as papers
 from paper_reader.arxiv_search import DEFAULT_DOWNLOAD_DIR, ArxivResult
 from paper_reader.server import create_app
@@ -43,15 +44,16 @@ class TestArxivSearchEndpoint:
     def test_returns_results_with_all_nine_fields(self, client, monkeypatch):
         calls = {}
 
-        def fake_search(query, max_results=10):
+        def fake_fallback(query, max_results=10):
             calls["args"] = (query, max_results)
-            return [_attention_result()]
+            return [_attention_result()], "arxiv"
 
-        monkeypatch.setattr(arxiv_search, "search", fake_search)
+        monkeypatch.setattr(arxiv_search, "search_with_fallback", fake_fallback)
 
         res = client.get("/api/arxiv/search", params={"q": "attention"})
 
         assert res.status_code == 200
+        assert res.json()["source"] == "arxiv"
         results = res.json()["results"]
         assert len(results) == 1
         assert results[0]["arxiv_id"] == "1706.03762"
@@ -66,11 +68,11 @@ class TestArxivSearchEndpoint:
     def test_max_results_forwarded(self, client, monkeypatch):
         calls = {}
 
-        def fake_search(query, max_results=10):
+        def fake_fallback(query, max_results=10):
             calls["args"] = (query, max_results)
-            return []
+            return [], "arxiv"
 
-        monkeypatch.setattr(arxiv_search, "search", fake_search)
+        monkeypatch.setattr(arxiv_search, "search_with_fallback", fake_fallback)
 
         res = client.get("/api/arxiv/search",
                          params={"q": "attention", "max_results": 50})
@@ -79,24 +81,24 @@ class TestArxivSearchEndpoint:
         assert calls["args"] == ("attention", 50)
 
     def test_no_results_returns_empty_list_not_error(self, client, monkeypatch):
-        monkeypatch.setattr(arxiv_search, "search",
-                            lambda query, max_results=10: [])
+        monkeypatch.setattr(arxiv_search, "search_with_fallback",
+                            lambda query, max_results=10: ([], "arxiv"))
 
         res = client.get("/api/arxiv/search", params={"q": "no such topic"})
 
         assert res.status_code == 200
-        assert res.json() == {"results": []}
+        assert res.json() == {"results": [], "source": "arxiv"}
 
     def test_search_failure_returns_502(self, client, monkeypatch):
         def boom(query, max_results=10):
             raise URLError("timeout")
 
-        monkeypatch.setattr(arxiv_search, "search", boom)
+        monkeypatch.setattr(arxiv_search, "search_with_fallback", boom)
 
         res = client.get("/api/arxiv/search", params={"q": "attention"})
 
         assert res.status_code == 502
-        assert "arXiv 检索失败" in res.json()["detail"]
+        assert res.json()["detail"].startswith("外部检索失败")
 
     @pytest.mark.parametrize("params", [
         {},                      # q 缺失
@@ -108,11 +110,44 @@ class TestArxivSearchEndpoint:
         def must_not_run(*args, **kwargs):
             raise AssertionError("validation failure must not reach search")
 
-        monkeypatch.setattr(arxiv_search, "search", must_not_run)
+        monkeypatch.setattr(arxiv_search, "search_with_fallback", must_not_run)
 
         res = client.get("/api/arxiv/search", params=params)
 
         assert res.status_code == 422
+
+    def test_rate_limited_falls_back_to_openalex(self, client, monkeypatch):
+        """Oracle：arXiv 打桩抛 ArxivRateLimitError、OpenAlex 打桩返回 1 条
+        → 编排层吃掉限流，端点 200 且 source == "openalex"。"""
+        def rate_limited(query, max_results=10):
+            raise arxiv_search.ArxivRateLimitError()
+
+        monkeypatch.setattr(arxiv_search, "search", rate_limited)
+        monkeypatch.setattr(openalex_search, "search",
+                            lambda query, max_results=10: [_attention_result()])
+
+        res = client.get("/api/arxiv/search", params={"q": "attention"})
+
+        assert res.status_code == 200
+        assert res.json()["source"] == "openalex"
+        assert res.json()["results"][0]["arxiv_id"] == "1706.03762"
+
+    def test_both_sources_fail_returns_502(self, client, monkeypatch):
+        """Oracle：arXiv 与 OpenAlex 打桩都抛 URLError → 502，
+        detail 以 外部检索失败 开头。"""
+        def arxiv_down(query, max_results=10):
+            raise URLError("arxiv down")
+
+        def openalex_down(query, max_results=10):
+            raise URLError("openalex down")
+
+        monkeypatch.setattr(arxiv_search, "search", arxiv_down)
+        monkeypatch.setattr(openalex_search, "search", openalex_down)
+
+        res = client.get("/api/arxiv/search", params={"q": "attention"})
+
+        assert res.status_code == 502
+        assert res.json()["detail"].startswith("外部检索失败")
 
 
 # ---------------------------------------------------------------------------
@@ -231,22 +266,12 @@ class TestArxivOpenEndpoint:
 
 
 # ---------------------------------------------------------------------------
-# ArxivRateLimitError → 友好 502（置于通用 except Exception 之前）
+# ArxivRateLimitError → 友好 502（open 端点保留；search 端点已被
+# search_with_fallback 编排层吃掉，见 TestArxivSearchEndpoint 兜底测试）
 # ---------------------------------------------------------------------------
 
 
 class TestArxivRateLimitErrorMapping:
-    def test_search_rate_limited_returns_friendly_502(self, client, monkeypatch):
-        def rate_limited(query, max_results=10):
-            raise arxiv_search.ArxivRateLimitError()
-
-        monkeypatch.setattr(arxiv_search, "search", rate_limited)
-
-        res = client.get("/api/arxiv/search", params={"q": "x"})
-
-        assert res.status_code == 502
-        assert res.json()["detail"] == "arXiv 限流中，请稍后 1-2 分钟再试"
-
     def test_open_rate_limited_returns_friendly_502(self, client, monkeypatch):
         def rate_limited(arxiv_id, dest_dir):
             raise arxiv_search.ArxivRateLimitError()

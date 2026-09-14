@@ -75,9 +75,10 @@ export const api = {
     const res = await fetch(url)
     if (!res.ok) {
       const body = await res.json().catch(() => ({ detail: `GET ${url} → ${res.status}` }))
-      throw new Error(body.detail) // 错误文案对齐后端 detail（"arXiv 检索失败: ..."）
+      throw new Error(body.detail) // 错误文案对齐后端 detail（"外部检索失败: ..."）
     }
-    return res.json() as Promise<{ results: ArxivResult[] }>
+    // source 标识结果来源；缺失视为 'arxiv'（旧后端兼容）
+    return res.json() as Promise<{ results: ArxivResult[]; source?: 'arxiv' | 'openalex' }>
   },
   openArxivPaper: (arxivId: string) =>
     fetch('/api/arxiv/open', {

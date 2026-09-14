@@ -133,6 +133,7 @@ describe('PaperListSidebar arXiv 搜索', () => {
     expect(doc).toContain('2017') // 年份（published 前 4 位）
     expect(doc).toContain('1706.03762') // arxiv_id Tag
     expect(doc).not.toContain('UNIQUE_TAIL_MARKER') // 摘要截断
+    expect(doc).not.toContain('OpenAlex 兜底') // source 缺失视为 arxiv，无兜底标签
 
     const item = [...container.querySelectorAll('.ant-list-item')].find((li) =>
       li.textContent?.includes('Attention Is All You Need'),
@@ -143,5 +144,23 @@ describe('PaperListSidebar arXiv 搜索', () => {
     })
     expect(onOpenArxiv).toHaveBeenCalledTimes(1)
     expect(onOpenArxiv).toHaveBeenCalledWith(RESULT)
+  })
+
+  it('source=="openalex" 时结果区显示「OpenAlex 兜底」Tag', async () => {
+    vi.mocked(api.arxivSearch).mockResolvedValue({ results: [RESULT], source: 'openalex' })
+    await renderSidebar()
+
+    const pane = await activateArxivTab()
+    const input = pane.querySelector('input') as HTMLInputElement
+    setInputValue(input, 'attention')
+    const btn = pane.querySelector('.ant-input-search-button') as HTMLElement
+    await act(async () => {
+      btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    })
+
+    const tag = [...container.querySelectorAll('.ant-tag')].find(
+      (t) => t.textContent === 'OpenAlex 兜底',
+    )
+    expect(tag, 'OpenAlex 兜底 Tag 存在').toBeDefined()
   })
 })

@@ -100,6 +100,7 @@ function ZoteroPane({ onOpen }: { onOpen: (item: ZoteroItem) => void }) {
 
 function ArxivPane({ onOpenArxiv }: { onOpenArxiv: (item: ArxivResult) => void }) {
   const [results, setResults] = useState<ArxivResult[]>([])
+  const [source, setSource] = useState<'arxiv' | 'openalex'>('arxiv')
   const [loading, setLoading] = useState(false)
 
   const doSearch = async (q: string) => {
@@ -108,8 +109,9 @@ function ArxivPane({ onOpenArxiv }: { onOpenArxiv: (item: ArxivResult) => void }
     try {
       const res = await api.arxivSearch(q)
       setResults(res.results)
+      setSource(res.source ?? 'arxiv') // 缺失视为 arxiv
     } catch (e) {
-      // 错误文案来自后端 detail（"arXiv 检索失败: ..."）
+      // 错误文案来自后端 detail（"外部检索失败: ..."）
       message.error(e instanceof Error ? e.message : String(e))
     } finally {
       setLoading(false)
@@ -124,6 +126,7 @@ function ArxivPane({ onOpenArxiv }: { onOpenArxiv: (item: ArxivResult) => void }
         onSearch={doSearch}
       />
       <div style={{ flex: 1, overflow: 'auto' }}>
+        {source === 'openalex' && <Tag color="orange">OpenAlex 兜底</Tag>}
         <Spin spinning={loading}>
           {results.length === 0 ? (
             <Empty description="无论文" />

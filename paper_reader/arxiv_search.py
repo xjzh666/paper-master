@@ -26,6 +26,7 @@ __all__ = [
     "RETRY_WAIT_SECONDS",
     "download_pdf",
     "search",
+    "search_with_fallback",
 ]
 
 QUERY_API = "https://export.arxiv.org/api/query"
@@ -84,6 +85,26 @@ def search(query: str, max_results: int = 10) -> list[ArxivResult]:
     with _open(url) as response:
         data = response.read()
     return _parse_feed(data)
+
+
+def search_with_fallback(
+    query: str, max_results: int = 10
+) -> tuple[list[ArxivResult], str]:
+    """arXiv 检索，失败（限流/网络/解析）时降级 OpenAlex 搜 arXiv 预印本。
+
+    返回 (结果, source)，source 为 "arxiv" | "openalex"。空结果不算失败、
+    不触发兜底；OpenAlex 也失败时异常透传（由调用方兜底）。
+    下载流程不兜底（决策 #21 扩展 D）。
+    """
+    try:
+        results = search(query, max_results)
+    except (ArxivRateLimitError, urllib.error.URLError, OSError, ET.ParseError):
+        # 惰性导入：openalex_search 顶层导入本模块的 ArxivResult，
+        # 本模块顶层反向导入它会循环依赖，只能在函数体内导入。
+        import paper_reader.openalex_search as openalex_search
+
+        return openalex_search.search(query, max_results), "openalex"
+    return results, "arxiv"
 
 
 def download_pdf(arxiv_id: str, dest_dir: str | Path) -> Path:

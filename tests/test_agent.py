@@ -1182,20 +1182,21 @@ def test_search_external_papers_in_tool_list():
 
 
 def test_search_external_papers_formats_numbered_list(monkeypatch):
-    """打桩返回 2 条 → 编号列表（标题/年份/作者/arxiv_id）+ 尾部 arxiv_id 提示；参数原样转发。"""
+    """打桩返回 (2 条, "arxiv") → 编号列表（标题/年份/作者/arxiv_id）+ 尾部
+    arxiv_id 提示；参数原样转发；source=="arxiv" 时输出与无兜底版逐字一致。"""
     from paper_reader import arxiv_search
     calls = []
 
-    def fake_search(query, max_results=10):
+    def fake_fallback(query, max_results=10):
         calls.append((query, max_results))
         return [
             _fake_arxiv_result("1706.03762", "Attention Is All You Need",
                                ["A Vaswani", "N Shazeer"], "2015-06-12T00:00:00Z"),
             _fake_arxiv_result("2005.14165", "Language Models are Few-Shot Learners",
                                ["T Brown"], "2020-05-28T00:00:00Z"),
-        ]
+        ], "arxiv"
 
-    monkeypatch.setattr(arxiv_search, "search", fake_search)
+    monkeypatch.setattr(arxiv_search, "search_with_fallback", fake_fallback)
     result = _external_search_fn()(query="rag", max_results=2)
 
     assert calls == [("rag", 2)]  # (query, max_results) 原样转发
@@ -1210,23 +1211,85 @@ def test_search_external_papers_formats_numbered_list(monkeypatch):
 
 
 def test_search_external_papers_empty_results(monkeypatch):
-    """打桩返回空列表 → 恰为 '[外部检索无结果]'。"""
+    """打桩返回 ([], "arxiv") → 恰为 '[外部检索无结果]'。"""
     from paper_reader import arxiv_search
-    monkeypatch.setattr(arxiv_search, "search", lambda query, max_results=10: [])
+    monkeypatch.setattr(arxiv_search, "search_with_fallback",
+                        lambda query, max_results=10: ([], "arxiv"))
 
     result = _external_search_fn()(query="nonexistent topic")
     assert result.text == "[外部检索无结果]"
     assert result.resources == []
 
 
+def test_search_external_papers_openalex_fallback_header(monkeypatch):
+    """source=="openalex" → 文本首行兜底标注，其余格式不变。"""
+    from paper_reader import arxiv_search
+    calls = []
+
+    def fake_fallback(query, max_results=10):
+        calls.append((query, max_results))
+        return [
+            _fake_arxiv_result("2312.10997", "RAPTOR: Recursive Abstractive Processing",
+                               ["S Saroff"], "2023-12-18T00:00:00Z"),
+        ], "openalex"
+
+    monkeypatch.setattr(arxiv_search, "search_with_fallback", fake_fallback)
+    result = _external_search_fn()(query="raptor", max_results=1)
+
+    assert calls == [("raptor", 1)]
+    lines = result.text.split("\n")
+    assert lines[0] == "[arXiv 暂不可用，以下为 OpenAlex 兜底结果]"
+    assert lines[1] == ("1. RAPTOR: Recursive Abstractive Processing (2023) — "
+                        "S Saroff [arxiv_id: 2312.10997]")
+    assert lines[2] == ""  # 列表后空一行
+    assert lines[3] == "提示：可把上述 arxiv_id 提供给用户，在 Web 端打开对应论文。"
+    assert result.resources == []
+
+
+def test_search_external_papers_openalex_empty_results(monkeypatch):
+    """source=="openalex" 且空结果 → 首行兜底标注 + [外部检索无结果]。"""
+    from paper_reader import arxiv_search
+    monkeypatch.setattr(arxiv_search, "search_with_fallback",
+                        lambda query, max_results=10: ([], "openalex"))
+
+    result = _external_search_fn()(query="nonexistent topic")
+
+    assert result.text == ("[arXiv 暂不可用，以下为 OpenAlex 兜底结果]"
+                           "\n[外部检索无结果]")
+    assert result.resources == []
+
+
+def test_search_external_papers_rate_limit_falls_back(monkeypatch):
+    """Oracle：arXiv 打桩抛 ArxivRateLimitError、OpenAlex 打桩返回 1 条
+    （走真 search_with_fallback 编排）→ 工具文本首行为兜底标注。"""
+    from paper_reader import arxiv_search
+    import paper_reader.openalex_search as openalex_search
+
+    def rate_limited(query, max_results=10):
+        raise arxiv_search.ArxivRateLimitError()
+
+    monkeypatch.setattr(arxiv_search, "search", rate_limited)
+    monkeypatch.setattr(
+        openalex_search, "search",
+        lambda query, max_results=10: [
+            _fake_arxiv_result("2312.10997", "RAPTOR", ["S Saroff"],
+                               "2023-12-18T00:00:00Z"),
+        ])
+
+    result = _external_search_fn()(query="raptor")
+
+    assert result.text.split("\n")[0] == "[arXiv 暂不可用，以下为 OpenAlex 兜底结果]"
+
+
 def test_search_external_papers_error_becomes_tool_failure(monkeypatch):
-    """工具自身不吞异常：search 抛错由 agent 循环兜底转成 '[工具执行失败: ...]'。"""
+    """工具自身不吞异常：search_with_fallback 抛错（双源皆败）由 agent
+    循环兜底转成 '[工具执行失败: ...]'。"""
     from paper_reader import arxiv_search
 
     def boom(query, max_results=10):
         raise ConnectionError("network down")
 
-    monkeypatch.setattr(arxiv_search, "search", boom)
+    monkeypatch.setattr(arxiv_search, "search_with_fallback", boom)
 
     ctx = FakeCtx()
     text_client = FakeTextClient(responses=[

@@ -54,6 +54,15 @@ describe('api.arxivSearch', () => {
 
     expect(fetchMock).toHaveBeenCalledWith('/api/arxiv/search?q=graph&max_results=5')
   })
+
+  it('passes through the source field when present (openalex fallback marker)', async () => {
+    const payload = { results: [ARXIV_RESULT], source: 'openalex' as const }
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => payload })))
+
+    const res = await api.arxivSearch('attention is all you need')
+
+    expect(res.source).toBe('openalex')
+  })
 })
 
 describe('api.openArxivPaper', () => {
