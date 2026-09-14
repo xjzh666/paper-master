@@ -228,3 +228,33 @@ class TestArxivOpenEndpoint:
 
         assert res.status_code == 500
         assert res.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# ArxivRateLimitError → 友好 502（置于通用 except Exception 之前）
+# ---------------------------------------------------------------------------
+
+
+class TestArxivRateLimitErrorMapping:
+    def test_search_rate_limited_returns_friendly_502(self, client, monkeypatch):
+        def rate_limited(query, max_results=10):
+            raise arxiv_search.ArxivRateLimitError()
+
+        monkeypatch.setattr(arxiv_search, "search", rate_limited)
+
+        res = client.get("/api/arxiv/search", params={"q": "x"})
+
+        assert res.status_code == 502
+        assert res.json()["detail"] == "arXiv 限流中，请稍后 1-2 分钟再试"
+
+    def test_open_rate_limited_returns_friendly_502(self, client, monkeypatch):
+        def rate_limited(arxiv_id, dest_dir):
+            raise arxiv_search.ArxivRateLimitError()
+
+        monkeypatch.setattr(arxiv_search, "download_pdf", rate_limited)
+        monkeypatch.setattr(papers, "open_paper", lambda p: {})
+
+        res = client.post("/api/arxiv/open", json={"arxiv_id": "1706.03762"})
+
+        assert res.status_code == 502
+        assert res.json()["detail"] == "arXiv 限流中，请稍后 1-2 分钟再试"

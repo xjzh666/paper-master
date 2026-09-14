@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 import paper_reader.arxiv_search as arxiv_search
 import paper_reader.papers as papers
+from paper_reader.arxiv_search import ArxivRateLimitError
 from paper_reader.llm import load_config
 from paper_reader.zotero import ZoteroLibrary, resolve_zotero_data_dir
 
@@ -74,6 +75,8 @@ def create_app(data_dir: Path | None = None,
                               max_results: int = Query(10, ge=1, le=50)):
         try:
             results = arxiv_search.search(q, max_results=max_results)
+        except ArxivRateLimitError as e:
+            raise HTTPException(status_code=502, detail=str(e))
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"arXiv 检索失败: {e}")
         return {"results": [asdict(r) for r in results]}
@@ -87,6 +90,8 @@ def create_app(data_dir: Path | None = None,
             raise HTTPException(status_code=400, detail="invalid arxiv_id")
         try:
             path = arxiv_search.download_pdf(arxiv_id, arxiv_search.DEFAULT_DOWNLOAD_DIR)
+        except ArxivRateLimitError as e:
+            raise HTTPException(status_code=502, detail=str(e))
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"arXiv PDF 下载失败: {e}")
         try:

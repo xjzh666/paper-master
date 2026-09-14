@@ -12,13 +12,21 @@ import os
 import re
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 
-__all__ = ["DEFAULT_DOWNLOAD_DIR", "ArxivResult", "download_pdf", "search"]
+__all__ = [
+    "DEFAULT_DOWNLOAD_DIR",
+    "ArxivRateLimitError",
+    "ArxivResult",
+    "RETRY_WAIT_SECONDS",
+    "download_pdf",
+    "search",
+]
 
 QUERY_API = "https://export.arxiv.org/api/query"
 PDF_URL_TEMPLATE = "https://arxiv.org/pdf/{arxiv_id}"
@@ -26,6 +34,16 @@ ABS_URL_TEMPLATE = "https://arxiv.org/abs/{arxiv_id}"
 
 #: 默认下载目录（Task 2/3 的端点与 agent 工具用）
 DEFAULT_DOWNLOAD_DIR = Path.home() / ".local/share/paper-master/downloads"
+
+#: HTTP 429 退避重试前的等待秒数（决策 #21 扩展 A）
+RETRY_WAIT_SECONDS = 15
+
+
+class ArxivRateLimitError(Exception):
+    """arXiv 限流（HTTP 429 退避重试一次仍失败）；str 固定为友好文案。"""
+
+    def __str__(self) -> str:
+        return "arXiv 限流中，请稍后 1-2 分钟再试"
 
 _ATOM_NS = "http://www.w3.org/2005/Atom"
 _ARXIV_NS = "http://arxiv.org/schemas/atom"
@@ -121,10 +139,27 @@ def _throttle() -> None:
 
 
 def _open(url: str):
-    """限速后发起 GET，返回可作上下文管理器的 response。"""
-    _throttle()
+    """限速后发起 GET，返回可作上下文管理器的 response。
+
+    HTTP 429 自动退避重试一次：等待 RETRY_WAIT_SECONDS 后过闸重发同一
+    URL；重试仍 429 抛 ArxivRateLimitError。非 429 的 HTTPError 直接
+    上抛（不等待、不重试）。
+    """
     request = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
-    return urllib.request.urlopen(request, timeout=_TIMEOUT)
+    _throttle()
+    try:
+        return urllib.request.urlopen(request, timeout=_TIMEOUT)
+    except urllib.error.HTTPError as e:
+        if e.code != 429:
+            raise
+        time.sleep(RETRY_WAIT_SECONDS)
+        _throttle()
+        try:
+            return urllib.request.urlopen(request, timeout=_TIMEOUT)
+        except urllib.error.HTTPError as retry_err:
+            if retry_err.code == 429:
+                raise ArxivRateLimitError() from retry_err
+            raise
 
 
 # ---------------------------------------------------------------------------

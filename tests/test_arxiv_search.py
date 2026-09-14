@@ -3,6 +3,7 @@
 录制片段做 fixture）；限速测试打桩 time（FakeClock），全程不真睡。"""
 import io
 from pathlib import Path
+from urllib.error import HTTPError
 
 import pytest
 
@@ -159,6 +160,25 @@ class FlakyResponse:
 
     def __exit__(self, *exc_info):
         return False
+
+
+class ScriptedUrlopen:
+    """urlopen 打桩：按脚本逐次给出响应载荷或异常，驱动 429 重试路径。
+
+    script 每项是 bytes（作为响应载荷）或 Exception（抛出），
+    调用次数超过脚本长度时 IndexError（测试里脚本长度即预期调用次数）。
+    """
+
+    def __init__(self, script: list[bytes | Exception]):
+        self.script = list(script)
+        self.calls: list[str] = []
+
+    def __call__(self, request, timeout=None):
+        self.calls.append(request.full_url)
+        action = self.script.pop(0)
+        if isinstance(action, Exception):
+            raise action
+        return FakeResponse(action)
 
 
 class FakeClock:
@@ -375,3 +395,76 @@ class TestRateLimit:
 
 def test_default_download_dir_constant():
     assert DEFAULT_DOWNLOAD_DIR == Path.home() / ".local/share/paper-master/downloads"
+
+
+# ---------------------------------------------------------------------------
+# 429 退避重试（_open；search 与 download_pdf 共用）
+# ---------------------------------------------------------------------------
+
+
+def _http_429() -> HTTPError:
+    return HTTPError(
+        "https://export.arxiv.org/api/query", 429, "Too Many Requests", None, None
+    )
+
+
+class TestRetryOn429:
+    def test_retry_constants_and_friendly_message(self):
+        assert arxiv_search.RETRY_WAIT_SECONDS == 15
+        assert (
+            str(arxiv_search.ArxivRateLimitError())
+            == "arXiv 限流中，请稍后 1-2 分钟再试"
+        )
+
+    def test_first_429_retries_once_and_succeeds(self, monkeypatch, fake_clock):
+        fake = ScriptedUrlopen([_http_429(), ATTENTION_FEED.encode()])
+        monkeypatch.setattr("urllib.request.urlopen", fake)
+
+        results = search("rag", 3)
+
+        assert len(results) == 2  # 重试拿到正常 Atom，正常返回
+        assert fake.calls[0] == fake.calls[1]  # 重试同一 URL
+        assert fake_clock.sleeps == [15]  # 退避恰好一次 RETRY_WAIT_SECONDS
+
+    def test_persistent_429_raises_friendly_error_after_one_retry(
+        self, monkeypatch, fake_clock
+    ):
+        fake = ScriptedUrlopen([_http_429(), _http_429()])
+        monkeypatch.setattr("urllib.request.urlopen", fake)
+
+        with pytest.raises(arxiv_search.ArxivRateLimitError) as exc_info:
+            search("rag", 3)
+
+        assert str(exc_info.value) == "arXiv 限流中，请稍后 1-2 分钟再试"
+        assert len(fake.calls) == 2  # 只重试一次，不再第三次
+        assert fake_clock.sleeps == [15]  # 只睡一次
+
+    def test_non_429_http_error_propagates_without_sleep(
+        self, monkeypatch, fake_clock
+    ):
+        not_found = HTTPError(
+            "https://export.arxiv.org/api/query", 404, "Not Found", None, None
+        )
+        fake = ScriptedUrlopen([not_found])
+        monkeypatch.setattr("urllib.request.urlopen", fake)
+
+        with pytest.raises(HTTPError) as exc_info:
+            search("rag", 3)
+
+        assert exc_info.value.code == 404  # 原异常直接抛
+        assert len(fake.calls) == 1  # 不重试
+        assert fake_clock.sleeps == []  # 不 sleep
+
+    def test_download_pdf_shares_retry_via_open(self, monkeypatch, fake_clock, tmp_path):
+        """download_pdf 经共用 _open 自动获得 429 退避重试。"""
+        fake = ScriptedUrlopen([_http_429(), PDF_PAYLOAD])
+        monkeypatch.setattr("urllib.request.urlopen", fake)
+
+        result = download_pdf("1706.03762", tmp_path)
+
+        assert result.read_bytes() == PDF_PAYLOAD
+        assert fake.calls == [
+            "https://arxiv.org/pdf/1706.03762",
+            "https://arxiv.org/pdf/1706.03762",
+        ]
+        assert fake_clock.sleeps == [15]
