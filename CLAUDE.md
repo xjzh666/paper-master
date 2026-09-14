@@ -42,12 +42,14 @@ paper_reader/
   ├── context.py         # 对话上下文 + BGE-M3 混合检索
   ├── zotero.py          # Zotero 只读数据层（collections/items/search/resolve_pdf）
   ├── papers.py          # Web 会话仓库：Session + 异步解析 + SSE 事件源 + chunks-index
+  ├── arxiv_search.py    # arXiv 搜索客户端：限速闸 + 429 退避重试 + OpenAlex 兜底编排
+  ├── openalex_search.py # OpenAlex 薄客户端，降级兜底
   ├── latex_fix.py       # 公式 LaTeX 语义规范化（serve-time 应用）
   ├── math_quality.py    # 数学质量层：覆盖率 + OCR/污染检测（含 CLI）
-  └── server.py          # FastAPI：/api/zotero/* + /api/papers/* + 前端静态托管
+  └── server.py          # FastAPI：/api/zotero/* + /api/papers/* + /api/arxiv/* + 前端静态托管
 docs/
   ├── architecture.md    # 架构详情（数据流 / SSE 协议 / 数据模型 / 子系统 / 数学渲染）
-  ├── decisions.md       # 关键设计决策全文（#1-#20）
+  ├── decisions.md       # 关键设计决策全文（#1-#21）
   ├── history.md         # 已完成条目完整清单
   ├── deep-research-report.md          # 论文源 API 调研报告（15 源横评，2026-09）
   ├── openalex-deep-research-report.md # OpenAlex API 专项调研报告
@@ -57,7 +59,7 @@ frontend/                # Web 前端（React + TypeScript + Ant Design + Vite�
   ├── src/               # 三栏 App + citation.ts（引用定位）+ markdown/ 共享插件栈（详见 architecture.md）
   ├── scripts/           # math-coverage.mjs 公式覆盖率校验
   └── dist/              # 构建产物（npm run build 输出，server.py 静态托管）
-tests/                   # 281 个 Python 测试 + 43 个前端 vitest，全过
+tests/                   # 348 个 Python 测试 + 51 个前端 vitest，全过
 config.example.yaml      # 配置模板（提交）
 config.yaml              # 实际配置（gitignore）
 .venv/                   # 虚拟环境（gitignore）
@@ -74,10 +76,11 @@ papers/                  # 测试用 PDF 论文（gitignore）
 - [x] **P2：Tool Result 压缩** — 保留最近 3 轮完整 + observation 摘要压缩（含 off-by-one 修复）
 - [x] **P3：引用溯源** — `[cite:chunk_N]` 链接 + 阅读区滚动高亮（决策 #18）
 - [x] **P4：Web 应用 MVP** — 异步解析 + SSE 流式对话 + 历史持久化/恢复 + 数学渲染清洗 pipeline
+- [x] **P6.1：外部论文搜索** — arXiv 检索 + PDF 下载进入既有管线；429 退避重试 + OpenAlex 降级兜底（决策 #20/#21）
 
 ## 进行中
 
-- **P6：自主调研（新方向）** — Web 应用 MVP 已可用（列表→打开→解析→对话→阅读）；当前转向自主调研能力：外部论文搜索（P6.1）→ llmwiki 知识库（P6.2），见下一步优先级
+- **P6：自主调研（新方向）** — Web 应用 MVP 已可用（列表→打开→解析→对话→阅读）；外部论文搜索（P6.1）已完成，下一步 llmwiki 知识库（P6.2），见下一步优先级
 
 ## 下一步优先级
 
@@ -99,11 +102,11 @@ papers/                  # 测试用 PDF 论文（gitignore）
 
 最终目标：Agent 能自主做调研、多论文对比。
 
-#### P6.1 外部论文搜索（下一步优先）
+#### P6.1 外部论文搜索 ✅ 完成
 
-摆脱 Zotero 本地库限制，按查询获取外部论文。**先做最小可用闭环：查询 → 结果列表 → 获取原文 PDF → 进入现有解析/阅读/对话流程**。选型已定（决策 #20）：arXiv 单源起步，Semantic Scholar 排除；2026-09-14 范围扩展（决策 #21）：429 退避重试 + OpenAlex 降级兜底（arXiv 全局 429 事件后批准）。任务 1-4（搜索/端点/工具/前端）已实现并通过评审，活体验证通过；待办：任务 6-7（范围扩展）、arXiv 恢复后浏览器复验、文档同步。设计 spec：`docs/onegate/specs/2026-09-11-external-paper-search.md`。（此条反转早期"明确暂不做上网搜论文"的决策，理由：自主调研目标下本地库覆盖不了获取端。）
+摆脱 Zotero 本地库限制，按查询获取外部论文。**最小可用闭环：查询 → 结果列表 → 获取原文 PDF → 进入现有解析/阅读/对话流程**。选型（决策 #20）：arXiv 单源起步，Semantic Scholar 排除；2026-09-14 范围扩展（决策 #21）：429 退避重试 + OpenAlex 降级兜底（arXiv 全局 429 事件后批准）。实测结论：浏览器全链验证通过（搜索→打开→下载→解析→三栏阅读→对话、Zotero 无回归）；期间遭遇 arXiv 全局 429，OpenAlex 兜底真实生效。设计 spec：`docs/onegate/specs/2026-09-11-external-paper-search.md`。（此条反转早期"明确暂不做上网搜论文"的决策，理由：自主调研目标下本地库覆盖不了获取端。）
 
-#### P6.2 llmwiki 知识库（P6.1 之后）
+#### P6.2 llmwiki 知识库（下一步）
 
 把 LLM Wiki 思想（Karpathy）融入项目，作为原"本地知识库：多论文统一索引"的架构方案。战略原则：
 
@@ -169,8 +172,8 @@ paper-web                              # 一键启动 Web 版（激活 venv + �
 cd frontend && npm run dev              # 前端开发模式（Vite HMR，需后端已起）
 cd frontend && npm run build            # 构建前端到 dist/（server.py 静态托管）
 
-python3 -m pytest tests/ -v                   # Python 测试 (281)
-cd frontend && npx vitest run                 # 前端 vitest (43)
+python3 -m pytest tests/ -v                   # Python 测试 (348)
+cd frontend && npx vitest run                 # 前端 vitest (51)
 python3 -m paper_reader.math_quality paper.md        # 数学质量分析（OCR/编码/污染）
 python3 -m paper_reader.math_quality paper.md --fix out.md  # 输出清洗后的 md
 cd frontend && node scripts/math-coverage.mjs out.md      # 公式覆盖率校验

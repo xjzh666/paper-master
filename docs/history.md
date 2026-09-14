@@ -43,6 +43,14 @@ CLAUDE.md 只保留当前状态与活跃路线图；已完成条目的完整清�
 - [x] **对话历史前端恢复 + 清空** — `GET /api/papers/{id}/history`（内存 session 优先，磁盘兜底）+ `DELETE` 清空；ChatPanel 打开论文自动拉取历史恢复展示（历史与本轮新消息间插「以上是历史对话」分割线），标题栏「清空」按钮联动清磁盘 history 与 session 观察；顺带修复换论文旧对话残留
 - [x] **get_section 平层级修复 + 章节目录注入** — MinerU 把父子节标题全标成同一层级时，`find_section` 用编号深度（6 < 6.1 < 6.1.1）算有效层级，父章节正确收编子节正文；heading-only 结果兜底顺延后续块（2000 字上限）；system prompt 注入 `[论文章节目录]` 并要求 reference 从目录选取，杜绝瞎猜章节名
 - [x] **Session Observation 跨提问 + 中间产物落盘** — observations 所有权上移到 `ConversationContext`（每问新建 agent 也跨提问累积），run 结束 finally flush 并打 question 标记；落盘 `{sha}-observations.json`（全量不去重），注入最近 20 条带「未经复核」标注；`describe_image` 结果按图片相对路径缓存 `{sha}-images.json`（命中不调 vision API）；记录标准放宽为"有独立价值即使与当次问题无关也记 + sources 必填"；清空对话联动清观察（图像描述不清）；CLI 端同样恢复/保存
+- [x] **P6.1 外部论文搜索** — 摆脱 Zotero 本地库限制，按查询获取外部论文并进入既有解析/阅读/对话管线（查询 → 结果列表 → 下载原文 PDF → 打开）。选型见决策 #20（arXiv 起步、Semantic Scholar 排除），范围扩展见决策 #21（429 退避重试 + OpenAlex 降级兜底）。提交范围 e578117..9103415 + b519850（docs）。包含：
+  - [x] **`arxiv_search.py`** — arXiv 搜索客户端（Atom XML 解析，零第三方依赖）；模块级 3s 限速闸（search 与 download_pdf 共享）；HTTP 429 等 15s 重试一次，仍失败抛 `ArxivRateLimitError`（友好文案）；`download_pdf` 原子写（先落 `.part` 再 `os.replace`，中途失败清理不留截断文件）；`search_with_fallback` 编排 arXiv 检索失败时降级 OpenAlex（空结果不触发兜底）
+  - [x] **`openalex_search.py`** — OpenAlex 薄客户端（降级兜底，mailto 礼貌参数）；从 doi（`10.48550/arxiv.*`）或 `best_oa_location.pdf_url`（`arxiv.org/pdf/*`）提取 arxiv_id，非 arXiv 记录直接丢弃；按 arxiv_id 去重保序；下载不兜底（仍走 arXiv CDN）
+  - [x] **`/api/arxiv/*` 端点** — `GET /api/arxiv/search`（响应带 `source: arxiv|openalex`，双源皆败 502）；`POST /api/arxiv/open`（校验 arxiv_id，下载至 `~/.local/share/paper-master/downloads/` 后复用 `papers.open_paper`；错误映射 400/502/500）
+  - [x] **`search_external_papers` agent 工具** — 编号列表（title/year/authors/arxiv_id）供回答引用；OpenAlex 兜底时首行标注「arXiv 暂不可用，以下为 OpenAlex 兜底结果」
+  - [x] **前端 arXiv 搜索页签** — `PaperListSidebar` Tabs 新增「arXiv 搜索」：搜索结果列表 + 点击打开（走 `/api/arxiv/open` 进既有打开流程）；source 为 openalex 时结果区显示「OpenAlex 兜底」Tag
+  - [x] **验证** — pytest 348 / vitest 51 全过；浏览器全链验证通过（搜索→打开→下载→MinerU 解析→三栏阅读→对话、Zotero 无回归）；期间遭遇 arXiv 全局 429，OpenAlex 兜底真实生效
+  - 遗留：台账延期 Minor 与两个优化项（兜底提示增强：候选数/存活数；兜底超采样：per_page 放大再过滤）
 
 ## 阶段详情（已完成阶段）
 

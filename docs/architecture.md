@@ -140,6 +140,34 @@ LLMToolResponse       — LLM 返回解析 {text, tool_calls}
 - **三层记忆**：L1 对话（最新轮完整，往轮压缩）、L2 Observation（结构化观察，session 级累积 + 落盘，注入最近 20 条带「未经复核」标注）、L3 Evidence（`Observation.sources` 来源追溯，P3 引用溯源已完善）
 - **压缩**：每轮发送前压缩往轮 tool result，保留最近 3 轮完整（保证模型能回读证据）；无 observation 时降级为句子边界智能截断
 
+## 外部论文搜索（P6.1）
+
+摆脱 Zotero 本地库限制，按查询获取外部论文并复用既有管线（选型见决策 #20，范围扩展见 #21）。**边界：下载只走 arXiv CDN，OpenAlex 仅兜底检索**（下载流程不兜底，#21 扩展 D——arXiv PDF 域名与 export API 是不同服务，通常独立可用）。
+
+**模块职责（零第三方依赖：urllib + 标准库 XML/JSON）：**
+- `arxiv_search.py` — arXiv 搜索客户端。Atom XML 解析（`search`）；模块级限速闸：任意两次 arXiv 网络调用间隔 ≥3s（search 与 download_pdf 共享，串行锁实现）；HTTP 429 等 15s 重试一次，仍 429 抛 `ArxivRateLimitError`（str 为友好文案）；`download_pdf` 原子写（先落 `.part` 全部写成功后 `os.replace`，中途失败清理且不留截断文件——防 exists 早退永久命中坏缓存；文件已存在跳过网络请求）；`search_with_fallback` 编排 arXiv → OpenAlex 降级（空结果不算失败、不兜底；OpenAlex 也失败时异常透传给调用方）
+- `openalex_search.py` — OpenAlex 薄客户端（降级兜底）。works API + mailto 礼貌参数；从 doi（`10.48550/arxiv.*`）或 `best_oa_location.pdf_url`（`arxiv.org/pdf/*`）提取 arxiv_id，提取不出的非 arXiv 记录直接丢弃；按 arxiv_id 去重保序；不重建摘要（OpenAlex 倒排索引格式，范围外）
+
+**数据流：**
+
+```
+查询（前端「arXiv 搜索」页签 / agent 工具 search_external_papers）
+  → search_with_fallback()   — arXiv Atom 检索；失败（限流/网络/解析）降级 OpenAlex（只留 arXiv 预印本）
+  → 结果列表                 — 前端结果列表 / 工具编号列表，arxiv_id 对用户可见
+  → POST /api/arxiv/open     — {arxiv_id}
+  → download_pdf()           — arXiv CDN 下载至 ~/.local/share/paper-master/downloads/（原子写，已存在跳过）
+  → papers.open_paper(path)  — 进入既有管线（缓存/异步 MinerU 解析/SSE 对话），与 Zotero 打开同一入口
+```
+
+**端点契约（server.py）：**
+
+| 端点 | 契约 |
+|------|------|
+| `GET /api/arxiv/search?q=&max_results=` | 200 `{results: ArxivResult[], source: "arxiv" \| "openalex"}`（source 标识实际来源，前端缺失视为 arxiv）；双源皆败 502「外部检索失败: …」 |
+| `POST /api/arxiv/open` `{arxiv_id}` | body 缺失/格式非法 400（正则校验，兼防路径穿越）；下载限流或失败 502（限流时 detail 为友好文案）；`open_paper` 失败 500；成功返回与 `POST /api/papers/open` 同构的 paper_id + status |
+
+agent 工具 `search_external_papers(query, max_results)` 走同一编排：OpenAlex 兜底时结果首行标注「arXiv 暂不可用，以下为 OpenAlex 兜底结果」，末行提示把 arxiv_id 提供给用户在 Web 端打开。
+
 ## 子系统注意事项
 
 ### BGE-M3
@@ -212,15 +240,17 @@ paper-master/
 │   ├── zotero.py            # Zotero 只读数据层（直读 sqlite）
 │   ├── papers.py            # Web 会话仓库：Session + 异步解析 + 历史/观察落盘 + SSE 事件源 + chunks-index
 │   ├── observations.py      # Session Observation + 图像描述缓存读写
+│   ├── arxiv_search.py      # arXiv 搜索客户端：限速闸 + 429 退避重试 + OpenAlex 兜底编排
+│   ├── openalex_search.py   # OpenAlex 薄客户端，降级兜底
 │   ├── latex_fix.py         # OCR 公式 LaTeX 语义规范化（serve-time）
 │   ├── math_quality.py      # 数学质量层：覆盖率统计 + OCR/污染检测（含 CLI）
-│   └── server.py            # FastAPI：/api/zotero/* + /api/papers/* + 前端静态托管
+│   └── server.py            # FastAPI：/api/zotero/* + /api/papers/* + /api/arxiv/* + 前端静态托管
 ├── frontend/                # React + TypeScript + Ant Design + Vite
 │   ├── src/citation.ts      # 引用归一化/定位纯函数（chunk snippets → 已渲染 DOM 命中元素）
 │   ├── src/markdown/        # 共享 remark/rehype 插件栈 + rehypeMathInHtml + KaTeX CSS 同步回归测试
 │   ├── scripts/             # math-coverage.mjs 公式覆盖率校验
 │   └── dist/                # 构建产物（server.py 静态托管）
-└── tests/                   # 281 个 Python 测试 + 43 个前端 vitest
+└── tests/                   # 348 个 Python 测试 + 51 个前端 vitest
 ```
 
 ## 模型路由
