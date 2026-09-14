@@ -79,3 +79,29 @@
 3. `agent.py` 工具 + 测试
 4. 前端搜索入口 + 构建
 5. 浏览器全链手动验证 + 文档同步（CLAUDE.md P6.1 状态、history.md、测试数）
+6. 429 退避重试 + 友好文案（arxiv_search.py + server.py + 测试）【2026-09-14 追加】
+7. OpenAlex 降级兜底（openalex_search.py + search_with_fallback + server source + 工具标注 + 前端 Tag + 测试）【2026-09-14 追加】
+
+## 范围扩展（2026-09-14 用户批准，决策 #21）
+
+背景：浏览器验收时遭遇 arXiv API 全局性 429"Rate exceeded"（跨校园网/热点/代理三个出口网络均复现，同刻 OpenAlex 200 正常）——单源可用性风险从理论变为已发生。
+
+### 扩展 A：429 退避重试与友好文案
+
+- `_open` 层：捕获 HTTPError 且 code==429 → `time.sleep(RETRY_WAIT_SECONDS=15)` 后重试同一 URL 一次；再次 429 抛 `ArxivRateLimitError`（`str` 为"arXiv 限流中，请稍后 1-2 分钟再试"）；非 429 异常行为不变。`search` 与 `download_pdf` 经共用 `_open` 自动获得重试
+- server 两端点捕获 `ArxivRateLimitError` → 502，detail 用异常消息原文（前端已透传 detail，前端零改动）
+- 测试：429→sleep(15)→成功（打桩 time 断言 sleeps）；429×2→`ArxivRateLimitError`；非 429 HTTPError 不 sleep 直抛；端点 502 文案精确断言
+
+### 扩展 D：OpenAlex 降级兜底
+
+- 新模块 `paper_reader/openalex_search.py`：`search(query, max_results=10) -> list[ArxivResult]`；`GET https://api.openalex.org/works?search={q}&per_page={n}&mailto=paper-master@example.com`（`select` 限定字段）；从 doi（`10.48550/arxiv.{id}`）或 `best_oa_location.pdf_url`（`arxiv.org/pdf/{id}`）提取 arxiv_id（去版本号），提取失败的记录丢弃；按 arxiv_id 去重；`abstract` 留空（兜底降级不取摘要）；`published` 取 publication_year
+- 编排 `arxiv_search.search_with_fallback(query, max_results=10) -> tuple[list[ArxivResult], str]`：先走 arXiv；失败（ArxivRateLimitError/URLError/OSError/ET.ParseError）→ OpenAlex 兜底，返回 `(结果, "arxiv" | "openalex")`；OpenAlex 再失败异常透传
+- **空结果不触发兜底**（空是合法答案）
+- server：`GET /api/arxiv/search` 改用 `search_with_fallback`，响应增加 `"source"` 字段；前端缺失 source 时默认按 arxiv 处理（向后兼容）
+- agent 工具：`search_external_papers` 改用 `search_with_fallback`；source=="openalex" 时结果首行加 `[arXiv 暂不可用，以下为 OpenAlex 兜底结果]`
+- 下载不兜底：open 流程仍按 arxiv_id 走 arXiv CDN（与 export API 不同服务，通常独立可用）；CDN 也失败 → 既有 502 错误路径
+- 不做：OpenAlex 记录的摘要重建、非 arXiv 记录（纯期刊 OA）的打开支持——留后续迭代
+
+### 不做清单（更新）
+
+- ~~OpenAlex / Semantic Scholar 接入（决策 #20：预留不实现）~~ → OpenAlex 以降级兜底形式接入（2026-09-14，决策 #21）；Semantic Scholar 仍不接
