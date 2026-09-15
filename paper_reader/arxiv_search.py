@@ -73,6 +73,9 @@ class ArxivResult:
     categories: list[str]
     pdf_url: str
     abs_url: str
+    # S2 主源扩展（带默认值，arXiv/OpenAlex 腿不填）
+    tldr: str = ""
+    citation_count: int | None = None
 
 
 def search(query: str, max_results: int = 10) -> list[ArxivResult]:

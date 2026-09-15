@@ -60,6 +60,7 @@ class TestArxivSearchEndpoint:
         assert set(results[0]) == {
             "arxiv_id", "title", "authors", "abstract",
             "published", "updated", "categories", "pdf_url", "abs_url",
+            "tldr", "citation_count",
         }
         assert results[0]["title"] == "Attention Is All You Need"
         # 端点把参数原样传给模块层（限速闸所在层）
