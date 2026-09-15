@@ -2,6 +2,7 @@
 """arxiv_search 单测：零触网（urllib.request.urlopen 全打桩，Atom 响应用
 录制片段做 fixture）；限速测试打桩 time（FakeClock），全程不真睡。"""
 import io
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 
@@ -9,6 +10,7 @@ import pytest
 
 import paper_reader.arxiv_search as arxiv_search
 import paper_reader.openalex_search as openalex_search
+import paper_reader.s2_search as s2_search
 from paper_reader.arxiv_search import (
     DEFAULT_DOWNLOAD_DIR,
     ArxivResult,
@@ -400,8 +402,13 @@ def test_default_download_dir_constant():
 
 
 # ---------------------------------------------------------------------------
-# OpenAlex 降级兜底（search_with_fallback；决策 #21 扩展 D）
+# 三源编排链 search_with_fallback：S2（配 key 才参与）→ arXiv → OpenAlex
+# （spec 2026-09-15-s2-primary-search；OpenAlex 兜底为决策 #21 扩展 D）
 # ---------------------------------------------------------------------------
+
+#: 编排链降级标注（notice）逐字文案
+S2_UNAVAILABLE_NOTICE = "[Semantic Scholar 不可用，以下为 arXiv 检索结果]"
+ARXIV_UNAVAILABLE_NOTICE = "[arXiv 暂不可用，以下为 OpenAlex 兜底结果]"
 
 
 def _openalex_stub(monkeypatch, results=None, calls=None, error=None):
@@ -424,11 +431,34 @@ def _forbid_openalex(monkeypatch):
     monkeypatch.setattr(openalex_search, "search", must_not_call)
 
 
+def _forbid_arxiv(monkeypatch):
+    def must_not_call(*args, **kwargs):
+        raise AssertionError("arxiv search must not be triggered")
+
+    monkeypatch.setattr(arxiv_search, "search", must_not_call)
+
+
+def _forbid_s2(monkeypatch):
+    def must_not_call(*args, **kwargs):
+        raise AssertionError("s2 search must not be triggered")
+
+    monkeypatch.setattr(s2_search, "search", must_not_call)
+
+
 def _raiser(exc: Exception):
     def f(query, max_results=10):
         raise exc
 
     return f
+
+
+def _result(arxiv_id: str = "2312.10997", title: str = "RAPTOR") -> ArxivResult:
+    return ArxivResult(
+        arxiv_id=arxiv_id, title=title, authors=["S Saroff"], abstract="",
+        published="2023", updated="", categories=[],
+        pdf_url=f"https://arxiv.org/pdf/{arxiv_id}",
+        abs_url=f"https://arxiv.org/abs/{arxiv_id}",
+    )
 
 
 class TestSearchWithFallback:
@@ -438,22 +468,24 @@ class TestSearchWithFallback:
         )
         _forbid_openalex(monkeypatch)
 
-        results, source = search_with_fallback("attention")
+        results, source, notice = search_with_fallback("attention")
 
         assert source == "arxiv"
         assert len(results) == 2
+        assert notice == ""  # 无 key 静默走 arXiv，无标注
 
     def test_empty_results_do_not_trigger_fallback(self, monkeypatch):
-        """空结果是成功而非失败：返回 ([], "arxiv")，不碰 OpenAlex。"""
+        """空结果是成功而非失败：返回 ([], "arxiv", "")，不碰 OpenAlex。"""
         monkeypatch.setattr(
             "urllib.request.urlopen", FakeUrlopen(EMPTY_FEED.encode())
         )
         _forbid_openalex(monkeypatch)
 
-        results, source = search_with_fallback("no such paper exists")
+        results, source, notice = search_with_fallback("no such paper exists")
 
         assert results == []
         assert source == "arxiv"
+        assert notice == ""
 
     @pytest.mark.parametrize("raise_", [
         arxiv_search.ArxivRateLimitError,
@@ -461,20 +493,16 @@ class TestSearchWithFallback:
         lambda: OSError("connection reset"),
     ], ids=["rate-limit", "urlerror", "oserror"])
     def test_arxiv_failure_falls_back_to_openalex(self, monkeypatch, raise_):
-        fallback_result = ArxivResult(
-            arxiv_id="2312.10997", title="RAPTOR", authors=["S Saroff"],
-            abstract="", published="2023", updated="", categories=[],
-            pdf_url="https://arxiv.org/pdf/2312.10997",
-            abs_url="https://arxiv.org/abs/2312.10997",
-        )
+        fallback_result = _result()
         monkeypatch.setattr(arxiv_search, "search", _raiser(raise_()))
         calls = []
         _openalex_stub(monkeypatch, results=[fallback_result], calls=calls)
 
-        results, source = search_with_fallback("raptor", 5)
+        results, source, notice = search_with_fallback("raptor", 5)
 
         assert source == "openalex"
         assert results == [fallback_result]
+        assert notice == ARXIV_UNAVAILABLE_NOTICE  # 现有文案迁移进 notice
         assert calls == [("raptor", 5)]  # (query, max_results) 原样转发
 
     def test_arxiv_parse_error_falls_back_to_openalex(self, monkeypatch):
@@ -482,18 +510,14 @@ class TestSearchWithFallback:
         monkeypatch.setattr(
             "urllib.request.urlopen", FakeUrlopen(b"this is not atom xml")
         )
-        fallback_result = ArxivResult(
-            arxiv_id="2312.10997", title="RAPTOR", authors=[], abstract="",
-            published="2023", updated="", categories=[],
-            pdf_url="https://arxiv.org/pdf/2312.10997",
-            abs_url="https://arxiv.org/abs/2312.10997",
-        )
+        fallback_result = _result()
         _openalex_stub(monkeypatch, results=[fallback_result])
 
-        results, source = search_with_fallback("raptor")
+        results, source, notice = search_with_fallback("raptor")
 
         assert source == "openalex"
         assert results == [fallback_result]
+        assert notice == ARXIV_UNAVAILABLE_NOTICE
 
     def test_openalex_failure_propagates(self, monkeypatch):
         """arXiv 失败且 OpenAlex 也失败 → 异常透传（由调用方兜底为 502 等）。"""
@@ -502,6 +526,127 @@ class TestSearchWithFallback:
 
         with pytest.raises(URLError):
             search_with_fallback("raptor")
+
+    # -- S2 主源腿（spec 2026-09-15-s2-primary-search）----------------------
+
+    @pytest.mark.usefixtures("s2_enabled")
+    def test_s2_success_returns_s2_source(self, monkeypatch):
+        """Oracle：配 key 且 S2 成功 → (结果, "s2", "")，后续腿不参与。"""
+        r1 = _result("1706.03762", "Attention Is All You Need")
+        calls = []
+
+        def fake_s2(query, max_results=10):
+            calls.append((query, max_results))
+            return [r1]
+
+        monkeypatch.setattr(s2_search, "search", fake_s2)
+        _forbid_arxiv(monkeypatch)
+        _forbid_openalex(monkeypatch)
+
+        results, source, notice = search_with_fallback("attention", 5)
+
+        assert (results, source, notice) == ([r1], "s2", "")
+        assert calls == [("attention", 5)]  # (query, max_results) 原样转发
+
+    def test_no_key_skips_s2_silently(self, monkeypatch):
+        """Oracle：无 key → 直接走 arXiv，(结果, "arxiv", "")，且
+        s2_search.search 未被调用（forbid-stub）。"""
+        r2 = _result("1706.03762", "Attention Is All You Need")
+        monkeypatch.setattr(s2_search, "load_api_key", lambda: None)
+        _forbid_s2(monkeypatch)
+        monkeypatch.setattr(
+            arxiv_search, "search", lambda query, max_results=10: [r2]
+        )
+        _forbid_openalex(monkeypatch)
+
+        results, source, notice = search_with_fallback("attention")
+
+        assert (results, source, notice) == ([r2], "arxiv", "")  # 静默，无标注
+
+    @pytest.mark.usefixtures("s2_enabled")
+    @pytest.mark.parametrize("raise_", [
+        lambda: s2_search.S2RateLimitError(),
+        lambda: s2_search.S2Error("bad key"),
+        lambda: URLError("timeout"),
+        lambda: OSError("connection reset"),
+        lambda: ET.ParseError("unparseable payload"),
+    ], ids=["rate-limit", "s2-error", "urlerror", "oserror", "parse-error"])
+    def test_s2_failure_falls_back_to_arxiv_with_notice(
+        self, monkeypatch, raise_
+    ):
+        """Oracle：配 key 但 S2 失败（五类异常）→ 落 arXiv，
+        notice 为 S2 不可用标注（逐字）。"""
+        r2 = _result()
+        monkeypatch.setattr(s2_search, "search", _raiser(raise_()))
+        monkeypatch.setattr(
+            arxiv_search, "search", lambda query, max_results=10: [r2]
+        )
+        _forbid_openalex(monkeypatch)
+
+        results, source, notice = search_with_fallback("attention")
+
+        assert (results, source, notice) == (
+            [r2], "arxiv", S2_UNAVAILABLE_NOTICE,
+        )
+
+    @pytest.mark.usefixtures("s2_enabled")
+    def test_s2_not_configured_error_is_silent_not_failure(self, monkeypatch):
+        """except 顺序陷阱：S2NotConfiguredError 继承自 S2Error，未配置分支
+        必须先于 S2Error 捕获——静默跳过，不得被吞成失败标注。"""
+        r2 = _result()
+        monkeypatch.setattr(
+            s2_search, "search",
+            _raiser(s2_search.S2NotConfiguredError("key 消失了")),
+        )
+        monkeypatch.setattr(
+            arxiv_search, "search", lambda query, max_results=10: [r2]
+        )
+
+        results, source, notice = search_with_fallback("attention")
+
+        assert (results, source, notice) == ([r2], "arxiv", "")
+
+    @pytest.mark.usefixtures("s2_enabled")
+    def test_s2_and_arxiv_failure_falls_to_openalex(self, monkeypatch):
+        """Oracle：S2、arXiv 都抛 URLError → OpenAlex 兜底；notice 为 arXiv
+        不可用标注（替代 S2 标注，非叠加）。"""
+        r3 = _result()
+        monkeypatch.setattr(s2_search, "search", _raiser(URLError("s2 down")))
+        monkeypatch.setattr(arxiv_search, "search", _raiser(URLError("arxiv down")))
+        _openalex_stub(monkeypatch, results=[r3])
+
+        results, source, notice = search_with_fallback("attention")
+
+        assert (results, source, notice) == (
+            [r3], "openalex", ARXIV_UNAVAILABLE_NOTICE,
+        )
+
+    @pytest.mark.usefixtures("s2_enabled")
+    def test_s2_empty_results_are_final_answer(self, monkeypatch):
+        """空结果语义不变：S2 返回 [] 即最终答案，不触发后续兜底。"""
+        monkeypatch.setattr(
+            s2_search, "search", lambda query, max_results=10: []
+        )
+        _forbid_arxiv(monkeypatch)
+        _forbid_openalex(monkeypatch)
+
+        results, source, notice = search_with_fallback("attention")
+
+        assert (results, source, notice) == ([], "s2", "")
+
+
+def test_s2_disabled_by_default_even_with_real_config(tmp_path, monkeypatch):
+    """conftest autouse 质量关：真 config.yaml 配了 key 的机器上，未显式
+    启用 s2_enabled 的测试 load_api_key() 也必须得 None（既有测试零触网）。"""
+    (tmp_path / "config.yaml").write_text(
+        "external_search:\n"
+        "  semantic_scholar:\n"
+        "    api_key: real-key-on-this-machine\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    assert s2_search.load_api_key() is None
 
 
 # ---------------------------------------------------------------------------

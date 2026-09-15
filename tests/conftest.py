@@ -6,6 +6,8 @@ import fitz
 import numpy as np
 import pytest
 
+import paper_reader.s2_search as s2_search
+
 
 class _FakeModel:
     """Fake embedding model: simple word-overlap vector, fast and semantic-ish.
@@ -63,6 +65,33 @@ def mock_embedding_model(monkeypatch):
         "paper_reader.context._get_embedding_model", fake_get_model
     )
     monkeypatch.setattr("paper_reader.context._embedding_model", None)
+
+
+@pytest.fixture(autouse=True)
+def s2_disabled_by_default(monkeypatch):
+    """默认禁用 S2 源：未显式启用的测试中真 load_api_key() 恒得 None，
+    配了真 key 的机器上既有测试也零触网（编排链因此直接走 arXiv）。
+
+    打桩点选 load_api_key 的依赖 load_config（模块属性）而非替换
+    load_api_key 本身：task 1 的 TestLoadApiKey 打桩 load_config 后直测
+    真 load_api_key()，替换该属性会让其失败。效果与「load_api_key →
+    lambda: None」恒等；S2 专属测试用 s2_enabled 启用假 key 覆盖。
+    """
+
+    def no_real_config(path):
+        raise FileNotFoundError(path)
+
+    monkeypatch.setattr(s2_search, "load_config", no_real_config)
+
+
+@pytest.fixture
+def s2_enabled(monkeypatch):
+    """S2 专属测试显式申请：覆盖默认禁用，load_api_key 返回假 key。
+
+    打桩在 load_api_key（模块属性），优先于任何 load_config 状态生效；
+    s2_search.search 仍由各测试自行打桩，绝不触网。
+    """
+    monkeypatch.setattr(s2_search, "load_api_key", lambda: "fake-s2-key")
 
 
 @pytest.fixture

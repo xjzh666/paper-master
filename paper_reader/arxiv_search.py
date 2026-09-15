@@ -92,13 +92,34 @@ def search(query: str, max_results: int = 10) -> list[ArxivResult]:
 
 def search_with_fallback(
     query: str, max_results: int = 10
-) -> tuple[list[ArxivResult], str]:
-    """arXiv 检索，失败（限流/网络/解析）时降级 OpenAlex 搜 arXiv 预印本。
+) -> tuple[list[ArxivResult], str, str]:
+    """三源检索链：S2（配置了 key 才参与）→ arXiv → OpenAlex。
 
-    返回 (结果, source)，source 为 "arxiv" | "openalex"。空结果不算失败、
-    不触发兜底；OpenAlex 也失败时异常透传（由调用方兜底）。
-    下载流程不兜底（决策 #21 扩展 D）。
+    返回 (结果, source, notice)：source 为 "s2" | "arxiv" | "openalex"；
+    notice 区分「未配置」（静默，空串）与「失败」（降级标注文案）。
+    空结果不算失败、不触发兜底；OpenAlex 也失败时异常透传（由调用方
+    兜底）。下载流程不兜底（决策 #21 扩展 D）。
     """
+    # 惰性导入：s2_search 顶层导入本模块的 ArxivResult 与 llm，本模块
+    # 顶层反向导入会循环依赖，只能在函数体内导入（与 openalex 腿同模式）。
+    import paper_reader.s2_search as s2_search
+
+    notice = ""
+    if s2_search.load_api_key() is not None:
+        try:
+            return s2_search.search(query, max_results), "s2", ""
+        except s2_search.S2NotConfiguredError:
+            # 未配置：静默跳过。S2NotConfiguredError 继承自 S2Error，
+            # 本分支必须先于 S2Error 捕获，否则静默跳过被吞成失败标注。
+            pass
+        except (
+            s2_search.S2RateLimitError,
+            s2_search.S2Error,
+            urllib.error.URLError,
+            OSError,
+            ET.ParseError,
+        ):
+            notice = "[Semantic Scholar 不可用，以下为 arXiv 检索结果]"
     try:
         results = search(query, max_results)
     except (ArxivRateLimitError, urllib.error.URLError, OSError, ET.ParseError):
@@ -106,8 +127,12 @@ def search_with_fallback(
         # 本模块顶层反向导入它会循环依赖，只能在函数体内导入。
         import paper_reader.openalex_search as openalex_search
 
-        return openalex_search.search(query, max_results), "openalex"
-    return results, "arxiv"
+        return (
+            openalex_search.search(query, max_results),
+            "openalex",
+            "[arXiv 暂不可用，以下为 OpenAlex 兜底结果]",
+        )
+    return results, "arxiv", notice
 
 
 def download_pdf(arxiv_id: str, dest_dir: str | Path) -> Path:

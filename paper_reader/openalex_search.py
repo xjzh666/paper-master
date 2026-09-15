@@ -27,7 +27,7 @@ WORKS_API = "https://api.openalex.org/works"
 #: select 精简响应：只取映射 ArxivResult 所需字段
 _SELECT_FIELDS = (
     "id,doi,display_name,publication_year,publication_date,"
-    "authorships,best_oa_location"
+    "authorships,best_oa_location,primary_location"
 )
 
 #: OpenAlex 礼貌池标识（官方推荐在请求中带 mailto）
@@ -40,18 +40,23 @@ _USER_AGENT = "paper-master/0.1 (+https://github.com/xjzh666/paper-master)"
 _DOI_ARXIV_RE = re.compile(r"10\.48550/arxiv\.(.+)", re.IGNORECASE)
 # arXiv PDF URL：arxiv.org/pdf/{id}（id 可能含老式 archive 前缀的斜杠）
 _PDF_URL_ARXIV_RE = re.compile(r"arxiv\.org/pdf/([^?#]+)", re.IGNORECASE)
+# arXiv abs 落地页：arxiv.org/abs/{id}（primary_location.landing_page_url 形态）
+_ABS_URL_ARXIV_RE = re.compile(r"arxiv\.org/abs/([^?#]+)", re.IGNORECASE)
 
 
 def search(query: str, max_results: int = 10) -> list[ArxivResult]:
     """按查询词检索 OpenAlex，返回能提取出 arxiv_id 的结果列表。
 
-    只保留 arXiv 预印本记录（doi 或 best_oa_location.pdf_url 可提取出
-    arxiv_id）；按 arxiv_id 去重保序，截取前 max_results 条。
+    filter 把主位置限定为 arXiv（source S4306400194），纯期刊记录不进
+    响应；仍只保留能提取出 arxiv_id 的记录（doi、best_oa_location.pdf_url
+    或 primary_location.landing_page_url）；按 arxiv_id 去重保序，截取前
+    max_results 条。
     """
     encoded = urllib.parse.quote(query, safe="")
     per_page = max(1, min(50, max_results))
     url = (
         f"{WORKS_API}?search={encoded}"
+        f"&filter=primary_location.source.id:S4306400194"
         f"&per_page={per_page}"
         f"&select={_SELECT_FIELDS}"
         f"&mailto={_MAILTO}"
@@ -83,25 +88,28 @@ def _parse_works(payload: dict, max_results: int) -> list[ArxivResult]:
 
 
 def _extract_arxiv_id(work: dict) -> str | None:
-    """从 doi（10.48550/arxiv.{id}）或 pdf_url（arxiv.org/pdf/{id}）提取
-    arxiv_id；去尾 .pdf、去版本号。两处都提取不出返回 None。"""
+    """提取优先级：doi（10.48550/arxiv.{id}）→ best_oa_location.pdf_url
+    （arxiv.org/pdf/{id}）→ primary_location.landing_page_url
+    （arxiv.org/abs/{id}）；均剥尾 .pdf 与版本号。三处都提取不出返回 None。"""
     doi = work.get("doi") or ""
     m = _DOI_ARXIV_RE.search(doi)
     if m:
-        return _strip_version(m.group(1))
+        return _normalize_arxiv_id(m.group(1))
     location = work.get("best_oa_location") or {}
-    pdf_url = location.get("pdf_url") or ""
-    m = _PDF_URL_ARXIV_RE.search(pdf_url)
+    m = _PDF_URL_ARXIV_RE.search(location.get("pdf_url") or "")
     if m:
-        raw = m.group(1)
-        if raw.endswith(".pdf"):
-            raw = raw[: -len(".pdf")]
-        return _strip_version(raw)
+        return _normalize_arxiv_id(m.group(1))
+    primary = work.get("primary_location") or {}
+    m = _ABS_URL_ARXIV_RE.search(primary.get("landing_page_url") or "")
+    if m:
+        return _normalize_arxiv_id(m.group(1))
     return None
 
 
-def _strip_version(raw_id: str) -> str:
-    """2312.10997v5 / cs/0112017v1 → 去掉尾部版本号。"""
+def _normalize_arxiv_id(raw_id: str) -> str:
+    """剥尾 .pdf 与版本号：2310.06670v3.pdf / 2312.10997v5 → 2310.06670 / 2312.10997。"""
+    if raw_id.endswith(".pdf"):
+        raw_id = raw_id[: -len(".pdf")]
     return re.sub(r"v\d+$", "", raw_id)
 
 

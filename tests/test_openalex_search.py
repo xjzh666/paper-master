@@ -165,9 +165,10 @@ class TestSearch:
         assert fake.calls == [
             "https://api.openalex.org/works"
             "?search=attention%20is%20all%20you%20need"
+            "&filter=primary_location.source.id:S4306400194"
             "&per_page=10"
             "&select=id,doi,display_name,publication_year,publication_date,"
-            "authorships,best_oa_location"
+            "authorships,best_oa_location,primary_location"
             "&mailto=paper-master@example.com"
         ]
 
@@ -261,6 +262,161 @@ class TestSearch:
         results = openalex_search.search("q", max_results=2)
 
         assert [r.arxiv_id for r in results] == ["2312.10000", "2312.10001"]
+
+    def test_third_path_extraction_priority_and_dedup(self, monkeypatch):
+        """Oracle：A doi 提取（1106.1234v2 去版本）；B 无 doi、pdf_url 为
+        期刊 landing 页（无 pdf）、primary 亦非 arXiv → 丢弃；C 无 doi 无
+        pdf_url，primary_location.landing_page_url 为 arXiv abs 形态 → 第三条
+        路径提取；D 与 A 同 arxiv_id → 去重。"""
+        payload = {
+            "results": [
+                {   # A: doi 提取，id 带版本号
+                    "id": "https://openalex.org/WA",
+                    "doi": "https://doi.org/10.48550/arxiv.1106.1234v2",
+                    "display_name": "Paper A",
+                    "publication_year": 2015,
+                    "publication_date": None,
+                    "authorships": [],
+                    "best_oa_location": None,
+                    "primary_location": None,
+                },
+                {   # B: 无 doi；pdf_url 为 landing 页无 pdf → 提取不出，丢弃
+                    "id": "https://openalex.org/WB",
+                    "doi": None,
+                    "display_name": "Paper B",
+                    "publication_year": 2020,
+                    "publication_date": None,
+                    "authorships": [],
+                    "best_oa_location": {
+                        "pdf_url": (
+                            "https://www.nature.com/articles/s41586-020-2649-2"
+                        )
+                    },
+                    "primary_location": {
+                        "landing_page_url": (
+                            "https://www.nature.com/articles/s41586-020-2649-2"
+                        )
+                    },
+                },
+                {   # C: 无 doi 无 pdf_url，landing_page_url 为 arXiv abs 形态
+                    "id": "https://openalex.org/WC",
+                    "doi": None,
+                    "display_name": "Paper C",
+                    "publication_year": 2019,
+                    "publication_date": None,
+                    "authorships": [],
+                    "best_oa_location": None,
+                    "primary_location": {
+                        "landing_page_url": "http://arxiv.org/abs/1901.01234"
+                    },
+                },
+                {   # D: 与 A 同 arxiv_id（经 pdf_url 提取）→ 重复被去重
+                    "id": "https://openalex.org/WD",
+                    "doi": None,
+                    "display_name": "Paper D duplicate of A",
+                    "publication_year": 2015,
+                    "publication_date": None,
+                    "authorships": [],
+                    "best_oa_location": {
+                        "pdf_url": "https://arxiv.org/pdf/1106.1234v1"
+                    },
+                    "primary_location": None,
+                },
+            ]
+        }
+        monkeypatch.setattr(
+            "urllib.request.urlopen", FakeUrlopen(_works_bytes(payload))
+        )
+
+        results = openalex_search.search("q")
+
+        assert [r.arxiv_id for r in results] == ["1106.1234", "1901.01234"]
+        assert results[0].title == "Paper A"  # 保序：先出现的 A 留下，D 去重
+
+    def test_doi_takes_priority_over_pdf_url_and_landing_page(
+        self, monkeypatch
+    ):
+        """三条路径同时命中且 id 不同 → doi 优先。"""
+        payload = {
+            "results": [
+                {
+                    "id": "https://openalex.org/W1",
+                    "doi": "https://doi.org/10.48550/arxiv.1106.1234",
+                    "display_name": "Priority doi",
+                    "publication_year": 2015,
+                    "publication_date": None,
+                    "authorships": [],
+                    "best_oa_location": {
+                        "pdf_url": "https://arxiv.org/pdf/1901.01234"
+                    },
+                    "primary_location": {
+                        "landing_page_url": "https://arxiv.org/abs/2001.03045"
+                    },
+                }
+            ]
+        }
+        monkeypatch.setattr(
+            "urllib.request.urlopen", FakeUrlopen(_works_bytes(payload))
+        )
+
+        results = openalex_search.search("q")
+
+        assert results[0].arxiv_id == "1106.1234"
+
+    def test_pdf_url_takes_priority_over_landing_page(self, monkeypatch):
+        """无 doi，pdf_url 与 landing_page_url 都指向 arXiv 但 id 不同
+        → best_oa_location.pdf_url 优先。"""
+        payload = {
+            "results": [
+                {
+                    "id": "https://openalex.org/W1",
+                    "doi": None,
+                    "display_name": "Priority pdf_url",
+                    "publication_year": 2019,
+                    "publication_date": None,
+                    "authorships": [],
+                    "best_oa_location": {
+                        "pdf_url": "https://arxiv.org/pdf/1901.01234"
+                    },
+                    "primary_location": {
+                        "landing_page_url": "https://arxiv.org/abs/2001.03045"
+                    },
+                }
+            ]
+        }
+        monkeypatch.setattr(
+            "urllib.request.urlopen", FakeUrlopen(_works_bytes(payload))
+        )
+
+        results = openalex_search.search("q")
+
+        assert results[0].arxiv_id == "1901.01234"
+
+    def test_landing_page_url_version_stripped(self, monkeypatch):
+        """第三条路径同样剥版本号：abs/2310.06670v3 → 2310.06670。"""
+        payload = {
+            "results": [
+                {
+                    "id": "https://openalex.org/W1",
+                    "doi": None,
+                    "display_name": "Versioned landing page",
+                    "publication_year": 2023,
+                    "publication_date": None,
+                    "authorships": [],
+                    "best_oa_location": None,
+                    "primary_location": {
+                        "landing_page_url": "https://arxiv.org/abs/2310.06670v3"
+                    },
+                }
+            ]
+        }
+        monkeypatch.setattr(
+            "urllib.request.urlopen", FakeUrlopen(_works_bytes(payload))
+        )
+
+        results = openalex_search.search("q")
+
+        assert results[0].arxiv_id == "2310.06670"
 
     def test_empty_results_returns_empty_list(self, monkeypatch):
         monkeypatch.setattr(

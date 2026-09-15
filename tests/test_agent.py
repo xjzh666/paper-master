@@ -1194,7 +1194,7 @@ def test_search_external_papers_formats_numbered_list(monkeypatch):
                                ["A Vaswani", "N Shazeer"], "2015-06-12T00:00:00Z"),
             _fake_arxiv_result("2005.14165", "Language Models are Few-Shot Learners",
                                ["T Brown"], "2020-05-28T00:00:00Z"),
-        ], "arxiv"
+        ], "arxiv", ""
 
     monkeypatch.setattr(arxiv_search, "search_with_fallback", fake_fallback)
     result = _external_search_fn()(query="rag", max_results=2)
@@ -1214,7 +1214,7 @@ def test_search_external_papers_empty_results(monkeypatch):
     """打桩返回 ([], "arxiv") → 恰为 '[外部检索无结果]'。"""
     from paper_reader import arxiv_search
     monkeypatch.setattr(arxiv_search, "search_with_fallback",
-                        lambda query, max_results=10: ([], "arxiv"))
+                        lambda query, max_results=10: ([], "arxiv", ""))
 
     result = _external_search_fn()(query="nonexistent topic")
     assert result.text == "[外部检索无结果]"
@@ -1231,7 +1231,7 @@ def test_search_external_papers_openalex_fallback_header(monkeypatch):
         return [
             _fake_arxiv_result("2312.10997", "RAPTOR: Recursive Abstractive Processing",
                                ["S Saroff"], "2023-12-18T00:00:00Z"),
-        ], "openalex"
+        ], "openalex", "[arXiv 暂不可用，以下为 OpenAlex 兜底结果]"
 
     monkeypatch.setattr(arxiv_search, "search_with_fallback", fake_fallback)
     result = _external_search_fn()(query="raptor", max_results=1)
@@ -1250,7 +1250,8 @@ def test_search_external_papers_openalex_empty_results(monkeypatch):
     """source=="openalex" 且空结果 → 首行兜底标注 + [外部检索无结果]。"""
     from paper_reader import arxiv_search
     monkeypatch.setattr(arxiv_search, "search_with_fallback",
-                        lambda query, max_results=10: ([], "openalex"))
+                        lambda query, max_results=10: (
+                            [], "openalex", "[arXiv 暂不可用，以下为 OpenAlex 兜底结果]"))
 
     result = _external_search_fn()(query="nonexistent topic")
 

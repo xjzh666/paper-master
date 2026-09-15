@@ -41,12 +41,12 @@ def client():
 
 
 class TestArxivSearchEndpoint:
-    def test_returns_results_with_all_nine_fields(self, client, monkeypatch):
+    def test_returns_results_with_all_result_fields(self, client, monkeypatch):
         calls = {}
 
         def fake_fallback(query, max_results=10):
             calls["args"] = (query, max_results)
-            return [_attention_result()], "arxiv"
+            return [_attention_result()], "arxiv", ""
 
         monkeypatch.setattr(arxiv_search, "search_with_fallback", fake_fallback)
 
@@ -71,7 +71,7 @@ class TestArxivSearchEndpoint:
 
         def fake_fallback(query, max_results=10):
             calls["args"] = (query, max_results)
-            return [], "arxiv"
+            return [], "arxiv", ""
 
         monkeypatch.setattr(arxiv_search, "search_with_fallback", fake_fallback)
 
@@ -83,7 +83,7 @@ class TestArxivSearchEndpoint:
 
     def test_no_results_returns_empty_list_not_error(self, client, monkeypatch):
         monkeypatch.setattr(arxiv_search, "search_with_fallback",
-                            lambda query, max_results=10: ([], "arxiv"))
+                            lambda query, max_results=10: ([], "arxiv", ""))
 
         res = client.get("/api/arxiv/search", params={"q": "no such topic"})
 

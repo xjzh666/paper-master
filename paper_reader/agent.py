@@ -310,7 +310,7 @@ def _make_tools(ctx, vision_client, resources_store: dict, observations_store: l
 
     def search_external_papers(query: str, max_results: int = 10) -> ToolResult:
         # 异常不在此捕获：网络错误由 agent 循环统一兜底为 [工具执行失败: ...]
-        results, source = arxiv_search.search_with_fallback(query, max_results)
+        results, source, _notice = arxiv_search.search_with_fallback(query, max_results)
         lines = []
         if source == "openalex":
             lines.append("[arXiv 暂不可用，以下为 OpenAlex 兜底结果]")

@@ -74,7 +74,7 @@ def create_app(data_dir: Path | None = None,
     def arxiv_search_endpoint(q: str = Query(min_length=1),
                               max_results: int = Query(10, ge=1, le=50)):
         try:
-            results, source = arxiv_search.search_with_fallback(
+            results, source, _notice = arxiv_search.search_with_fallback(
                 q, max_results=max_results)
         except Exception as e:
             # ArxivRateLimitError 已被 search_with_fallback 吃掉降级 OpenAlex，
