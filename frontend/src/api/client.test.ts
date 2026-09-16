@@ -63,6 +63,26 @@ describe('api.arxivSearch', () => {
 
     expect(res.source).toBe('openalex')
   })
+
+  it('passes through source "s2" and S2-only optional fields (tldr/citation_count)', async () => {
+    const payload = {
+      results: [
+        {
+          ...ARXIV_RESULT,
+          tldr: 'Transformers replace recurrence with attention.',
+          citation_count: 192499,
+        },
+      ],
+      source: 's2' as const,
+    }
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => payload })))
+
+    const res = await api.arxivSearch('attention is all you need')
+
+    expect(res.source).toBe('s2')
+    expect(res.results[0]?.tldr).toBe('Transformers replace recurrence with attention.')
+    expect(res.results[0]?.citation_count).toBe(192499)
+  })
 })
 
 describe('api.openArxivPaper', () => {

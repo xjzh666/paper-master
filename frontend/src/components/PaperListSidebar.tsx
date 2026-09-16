@@ -100,7 +100,7 @@ function ZoteroPane({ onOpen }: { onOpen: (item: ZoteroItem) => void }) {
 
 function ArxivPane({ onOpenArxiv }: { onOpenArxiv: (item: ArxivResult) => void }) {
   const [results, setResults] = useState<ArxivResult[]>([])
-  const [source, setSource] = useState<'arxiv' | 'openalex'>('arxiv')
+  const [source, setSource] = useState<'arxiv' | 'openalex' | 's2'>('arxiv')
   const [loading, setLoading] = useState(false)
 
   const doSearch = async (q: string) => {
@@ -127,6 +127,7 @@ function ArxivPane({ onOpenArxiv }: { onOpenArxiv: (item: ArxivResult) => void }
       />
       <div style={{ flex: 1, overflow: 'auto' }}>
         {source === 'openalex' && <Tag color="orange">OpenAlex 兜底</Tag>}
+        {source === 's2' && <Tag color="blue">Semantic Scholar</Tag>}
         <Spin spinning={loading}>
           {results.length === 0 ? (
             <Empty description="无论文" />
@@ -141,6 +142,7 @@ function ArxivPane({ onOpenArxiv }: { onOpenArxiv: (item: ArxivResult) => void }
                     <div>
                       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                         {r.authors.slice(0, 3).join(', ')} {r.published.slice(0, 4)}
+                        {r.citation_count != null && ` · 被引 ${r.citation_count}`}
                       </Typography.Text>
                       <Tag color="blue">{r.arxiv_id}</Tag>
                     </div>

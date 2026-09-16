@@ -100,6 +100,18 @@ function setInputValue(input: HTMLInputElement, value: string) {
   })
 }
 
+/** 在已激活的 arXiv pane 内触发一次搜索（受控输入 + 搜索按钮点击） */
+async function searchArxiv(pane: Element, q: string) {
+  const input = pane.querySelector('input') as HTMLInputElement
+  expect(input, '搜索输入框存在').toBeTruthy()
+  setInputValue(input, q)
+  const btn = pane.querySelector('.ant-input-search-button') as HTMLElement
+  expect(btn, '搜索按钮存在').toBeTruthy()
+  await act(async () => {
+    btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+  })
+}
+
 describe('PaperListSidebar 页签结构', () => {
   it('渲染两个页签：Zotero 论文库 / arXiv 搜索', async () => {
     await renderSidebar()
@@ -162,5 +174,60 @@ describe('PaperListSidebar arXiv 搜索', () => {
       (t) => t.textContent === 'OpenAlex 兜底',
     )
     expect(tag, 'OpenAlex 兜底 Tag 存在').toBeDefined()
+    expect(tag!.className, 'OpenAlex 兜底保持橙色').toContain('ant-tag-orange')
+    const tagTexts = [...container.querySelectorAll('.ant-tag')].map((t) => t.textContent)
+    expect(tagTexts, 'openalex 时不显示 s2 标签').not.toContain('Semantic Scholar')
+  })
+})
+
+describe('PaperListSidebar 三源来源标签与引用数', () => {
+  it('source=="s2" 时显示蓝色「Semantic Scholar」Tag，作者行显示「被引 192499」（数字原样）', async () => {
+    const s2Result: ArxivResult = {
+      ...RESULT,
+      tldr: 'Sequence transduction models without recurrence.',
+      citation_count: 192499,
+    }
+    vi.mocked(api.arxivSearch).mockResolvedValue({ results: [s2Result], source: 's2' })
+    await renderSidebar()
+
+    const pane = await activateArxivTab()
+    await searchArxiv(pane, 'attention')
+
+    const tag = [...container.querySelectorAll('.ant-tag')].find(
+      (t) => t.textContent === 'Semantic Scholar',
+    )
+    expect(tag, 'Semantic Scholar Tag 存在').toBeDefined()
+    expect(tag!.className, 'Semantic Scholar 标签为蓝色').toContain('ant-tag-blue')
+    const doc = container.textContent ?? ''
+    expect(doc).toContain('被引 192499')
+    expect(doc, '不加千分位').not.toContain('192,499')
+  })
+
+  it('source=="arxiv" 且无 citation_count 时无任何来源 Tag，作者行不含「被引」', async () => {
+    vi.mocked(api.arxivSearch).mockResolvedValue({ results: [RESULT] })
+    await renderSidebar()
+
+    const pane = await activateArxivTab()
+    await searchArxiv(pane, 'attention')
+
+    const tagTexts = [...container.querySelectorAll('.ant-tag')].map((t) => t.textContent)
+    expect(tagTexts, 'arxiv 源无 Semantic Scholar 标签').not.toContain('Semantic Scholar')
+    expect(tagTexts, 'arxiv 源无 OpenAlex 兜底标签').not.toContain('OpenAlex 兜底')
+    expect(container.textContent ?? '').not.toContain('被引')
+  })
+
+  it('citation_count==null（S2 未返回引用数）时干净降级：来源 Tag 照常，作者行不显示「被引」', async () => {
+    const noCitation: ArxivResult = { ...RESULT, citation_count: null }
+    vi.mocked(api.arxivSearch).mockResolvedValue({ results: [noCitation], source: 's2' })
+    await renderSidebar()
+
+    const pane = await activateArxivTab()
+    await searchArxiv(pane, 'attention')
+
+    const tag = [...container.querySelectorAll('.ant-tag')].find(
+      (t) => t.textContent === 'Semantic Scholar',
+    )
+    expect(tag, '来源标识不受 citation_count 缺失影响').toBeDefined()
+    expect(container.textContent ?? '').not.toContain('被引')
   })
 })

@@ -45,7 +45,7 @@ export interface ChunkIndexEntry {
   snippets: string[]
 }
 
-/** 一条 arXiv 检索结果（9 字段与后端 arxiv_search.ArxivResult dataclass 对齐） */
+/** 一条 arXiv 检索结果（11 字段与后端 arxiv_search.ArxivResult dataclass 对齐；tldr/citation_count 仅 S2 源携带） */
 export interface ArxivResult {
   arxiv_id: string
   title: string
@@ -56,6 +56,10 @@ export interface ArxivResult {
   categories: string[]
   pdf_url: string
   abs_url: string
+  /** S2 三行摘要（给 agent 用；前端摘要区继续显示 abstract，不渲染） */
+  tldr?: string
+  /** 引用数（null/缺失 = 未知，前端不显示被引） */
+  citation_count?: number | null
 }
 
 async function get<T>(url: string): Promise<T> {
@@ -78,7 +82,7 @@ export const api = {
       throw new Error(body.detail) // 错误文案对齐后端 detail（"外部检索失败: ..."）
     }
     // source 标识结果来源；缺失视为 'arxiv'（旧后端兼容）
-    return res.json() as Promise<{ results: ArxivResult[]; source?: 'arxiv' | 'openalex' }>
+    return res.json() as Promise<{ results: ArxivResult[]; source?: 'arxiv' | 'openalex' | 's2' }>
   },
   openArxivPaper: (arxivId: string) =>
     fetch('/api/arxiv/open', {
