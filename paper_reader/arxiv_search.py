@@ -136,6 +136,17 @@ def search_with_fallback(
     return results, "arxiv", notice
 
 
+def _part_path(dest: Path) -> Path:
+    """dest 的临时写入路径：加 pid + thread id 唯一化后缀。
+
+    /api/arxiv/open 跑在线程池里，两个线程同时下载同一 arxiv_id 时若共用
+    固定 .part 名会互写同一临时文件（且 os.replace 后的坏文件被 dest.exists()
+    早退永久命中）；各写各的 tmp 后，后到者的 os.replace 覆盖先到者，两份
+    都是完整文件。
+    """
+    return dest.with_name(f"{dest.name}.{os.getpid()}.{threading.get_ident()}.part")
+
+
 def download_pdf(arxiv_id: str, dest_dir: str | Path) -> Path:
     """下载 https://arxiv.org/pdf/{arxiv_id} 到 dest_dir。
 
@@ -149,9 +160,10 @@ def download_pdf(arxiv_id: str, dest_dir: str | Path) -> Path:
         return dest
 
     url = PDF_URL_TEMPLATE.format(arxiv_id=arxiv_id)
-    # 原子写：先落 .part，全部写成功后 os.replace；流中途失败时清理 .part
-    # 并上抛，dest 不落盘——避免截断 PDF 留在缓存路径上被 exists 早退永久命中。
-    tmp = dest.with_name(dest.name + ".part")
+    # 原子写：先落唯一名 .part（见 _part_path 的并发动机），全部写成功后
+    # os.replace；流中途失败时清理自己的 .part 并上抛，dest 不落盘——避免
+    # 截断 PDF 留在缓存路径上被 exists 早退永久命中。
+    tmp = _part_path(dest)
     try:
         with _open(url) as response, open(tmp, "wb") as fh:
             while chunk := response.read(_CHUNK_SIZE):

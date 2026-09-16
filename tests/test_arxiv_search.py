@@ -296,6 +296,46 @@ class TestSearch:
 
 
 class TestDownloadPdf:
+    def test_part_path_same_thread_stable(self, tmp_path):
+        """同线程内 _part_path 稳定，落在 dest 同目录、以 .part 结尾。"""
+        from paper_reader.arxiv_search import _part_path
+
+        dest = tmp_path / "1706.03762.pdf"
+        part = _part_path(dest)
+
+        assert part == _part_path(dest)
+        assert part.parent == dest.parent
+        assert part.name.startswith(dest.name)
+        assert part.name.endswith(".part")
+
+    def test_part_path_differs_across_threads(self, tmp_path):
+        """不同线程 id → 不同的 .part 路径（并发下载同一论文互不写同一临时文件）。
+
+        Barrier 保证两线程同时存活时各自取路径：并发线程的 ident 必不同；
+        （先退出的线程 ident 可被复用，故不能靠 start/join 顺序碰运气。）
+        """
+        import threading
+
+        from paper_reader.arxiv_search import _part_path
+
+        dest = tmp_path / "1706.03762.pdf"
+        paths = {}
+        barrier = threading.Barrier(2)
+
+        def worker(key):
+            barrier.wait(timeout=5)
+            paths[key] = _part_path(dest)
+
+        t1 = threading.Thread(target=worker, args=("a",))
+        t2 = threading.Thread(target=worker, args=("b",))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        assert paths["a"] != paths["b"]
+        assert paths["a"].parent == paths["b"].parent == dest.parent
+
     def test_downloads_to_sanitized_filename(self, monkeypatch, tmp_path):
         fake = FakeUrlopen(PDF_PAYLOAD, chunk_limit=7)
         monkeypatch.setattr("urllib.request.urlopen", fake)
