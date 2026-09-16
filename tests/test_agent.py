@@ -235,6 +235,79 @@ def test_get_section_truncates_long_content():
     assert "已截断" in result.text
 
 
+# ── get_section 重复内容检测 ───────────────────────────────────────────
+
+
+def _section_fn_with_find(ctx, find_section):
+    """打桩 ctx.find_section 后返回 get_section 工具闭包。"""
+    ctx.find_section = find_section
+    tools = _make_tools(ctx, FakeVisionClient(), {}, [])
+    return next(t for t in tools if t.name == "get_section").callable
+
+
+def test_get_section_duplicate_blocks_hint_on_second_query():
+    """两次查询命中同一组块 → 第二次返回文本最前面带重复提示行，首查无提示。"""
+    from paper_reader.blocks import ContentBlock
+    blocks = [ContentBlock(type="text", text="Section body content", level=0, page_idx=0)]
+    section_fn = _section_fn_with_find(FakeCtx(), lambda reference: blocks)
+
+    first = section_fn(reference="A")
+    second = section_fn(reference="B")
+
+    assert not first.text.startswith("[提示")
+    assert second.text.startswith(
+        "[提示：与此前查询「A」的结果高度重复，请勿重复检索相同章节]\n\n"
+    )
+
+
+def test_get_section_half_overlap_counts_as_duplicate():
+    """重叠率恰好 50%（>= 0.5 边界）即视为重复。"""
+    from paper_reader.blocks import ContentBlock
+    b1 = ContentBlock(type="text", text="shared", level=0, page_idx=0)
+    b2 = ContentBlock(type="text", text="only in A", level=0, page_idx=1)
+    b3 = ContentBlock(type="text", text="only in B", level=0, page_idx=2)
+    by_ref = {"A": [b1, b2], "B": [b1, b3]}
+    section_fn = _section_fn_with_find(FakeCtx(), lambda reference: by_ref[reference])
+
+    section_fn(reference="A")
+    second = section_fn(reference="B")
+
+    assert second.text.startswith("[提示：与此前查询「A」")
+
+
+def test_get_section_disjoint_blocks_no_hint():
+    """两次查询返回不相交块集合 → 第二次无提示。"""
+    from paper_reader.blocks import ContentBlock
+    a = [ContentBlock(type="text", text="alpha body", level=0, page_idx=0)]
+    b = [ContentBlock(type="text", text="beta body", level=0, page_idx=1)]
+    by_ref = {"A": a, "B": b}
+    section_fn = _section_fn_with_find(FakeCtx(), lambda reference: by_ref[reference])
+
+    section_fn(reference="A")
+    second = section_fn(reference="B")
+
+    assert "[提示" not in second.text
+
+
+def test_get_section_not_found_not_recorded_in_hits():
+    """未找到（None）不进历史：首查 None、次查命中相同块 → 无提示。"""
+    from paper_reader.blocks import ContentBlock
+    blocks = [ContentBlock(type="text", text="body", level=0, page_idx=0)]
+    state = {"calls": 0}
+
+    def fake_find(reference):
+        state["calls"] += 1
+        return None if state["calls"] == 1 else blocks
+
+    section_fn = _section_fn_with_find(FakeCtx(), fake_find)
+
+    first = section_fn(reference="A")
+    second = section_fn(reference="A")
+
+    assert "未找到章节" in first.text
+    assert "[提示" not in second.text
+
+
 def test_describe_image_tool():
     vision = FakeVisionClient()
     store = {
@@ -441,6 +514,72 @@ def test_agent_max_rounds_enforced():
     answer = agent.run(question="test", history=[])
     assert "暂时没能找到相关信息" in answer
     assert len(text_client.calls) == 7
+
+
+# ── 轮次耗尽合成部分回答 ───────────────────────────────────────────────
+
+
+def _exhaustion_responses(final_text=None):
+    """7 轮 tool_calls（含一轮 record_observation）+ 可选第 8 次文本响应。"""
+    responses = [
+        LLMToolResponse(tool_calls=[{
+            "id": f"call_{i}",
+            "name": "search_paper",
+            "arguments": '{"query":"test"}',
+        }])
+        for i in range(6)
+    ]
+    responses.append(LLMToolResponse(tool_calls=[{
+        "id": "call_obs",
+        "name": "record_observation",
+        "arguments": '{"summary":"已找到部分证据"}',
+    }]))
+    if final_text is not None:
+        responses.append(LLMToolResponse(text=final_text))
+    return responses
+
+
+def test_agent_synthesizes_partial_answer_on_round_exhaustion():
+    """7 轮 tool_calls 且含 record_observation → 第 8 次空工具合成调用，
+    其文本作为答案返回（已收集 observations 不作废）。"""
+    ctx = FakeCtx()
+    text_client = FakeTextClient(
+        responses=_exhaustion_responses(final_text="根据已收集信息：部分回答"))
+    agent = PaperAgent(text_client=text_client, vision_client=FakeVisionClient(), ctx=ctx)
+
+    answer = agent.run(question="test", history=[])
+
+    assert answer == "根据已收集信息：部分回答"
+    assert "抱歉" not in answer
+    assert len(text_client.calls) == 8
+    # 合成调用不带任何工具；末条消息是追加的合成指令（user）
+    assert text_client.calls[7]["tools"] == []
+    last_msg = text_client.calls[7]["messages"][-1]
+    assert last_msg["role"] == "user"
+    assert "不要调用任何工具" in last_msg["content"]
+
+
+class SynthesisBoomTextClient(FakeTextClient):
+    """第 8 次（空工具的合成）调用抛 RuntimeError，其余按脚本返回。"""
+
+    def chat_with_tools(self, messages, tools, system_prompt=""):
+        if tools == [] and len(self.calls) == 7:
+            self.calls.append({"messages": list(messages), "tools": tools,
+                               "system_prompt": system_prompt})
+            raise RuntimeError("synthesis boom")
+        return super().chat_with_tools(messages, tools, system_prompt)
+
+
+def test_agent_synthesis_failure_falls_back_to_fixed_answer():
+    """合成调用抛 RuntimeError → 落回固定文案，异常不向上抛。"""
+    ctx = FakeCtx()
+    text_client = SynthesisBoomTextClient(responses=_exhaustion_responses())
+    agent = PaperAgent(text_client=text_client, vision_client=FakeVisionClient(), ctx=ctx)
+
+    answer = agent.run(question="test", history=[])
+
+    assert answer == "抱歉，暂时没能找到相关信息，请尝试换一个问法。"
+    assert len(text_client.calls) == 8  # 合成调用确实发起过（失败被吞）
 
 
 def test_agent_injects_memory_into_system_prompt():
@@ -829,6 +968,27 @@ def test_agent_clears_tool_round_map_on_new_run():
 
     agent.run(question="新问题", history=[])
     assert len(agent._tool_round_map) == 0
+
+
+def test_agent_clears_section_hits_on_new_run():
+    """section_hits 与 observations 同为 per-run 生命周期：新 run() 清空。"""
+    ctx = FakeCtx()
+    text_client = FakeTextClient(responses=[
+        LLMToolResponse(tool_calls=[{
+            "id": "call_1",
+            "name": "get_section",
+            "arguments": '{"reference":"Methods"}',
+        }]),
+        LLMToolResponse(text="答"),
+        LLMToolResponse(text="又答"),
+    ])
+    agent = PaperAgent(text_client=text_client, vision_client=FakeVisionClient(), ctx=ctx)
+
+    agent.run(question="q1", history=[])
+    assert len(agent._section_hits) == 1
+
+    agent.run(question="q2", history=[])
+    assert len(agent._section_hits) == 0
 
 
 def test_agent_injects_toc_into_system_prompt():
