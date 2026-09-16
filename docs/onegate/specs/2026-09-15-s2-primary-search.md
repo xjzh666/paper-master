@@ -106,8 +106,8 @@
 ## 遗留清单（合并/后续处理时参考）
 
 - 侧栏摘要单行截断：PaperListSidebar.tsx 摘要 Paragraph ellipsis 无参 = AntD 默认单行。修法：`ellipsis={{ rows: 3 }}`（保留 160 字截断）
-- agent 轮次耗尽兜底：幻觉章节名 × find_section 兜底对多查询返回同一块内容（决策 #17 既有局限）× 循环耗尽落 agent.py:658 固定文案（已收集信息未变成回答）。改善方向：耗尽时基于 observations 合成部分回答 + 兜底重复内容检测。归 P6.2 前打磨
-- server.py:81 陈旧注释"双源皆败"（三源现实，一处注释）
-- download_pdf .part 并发竞态唯一化（pid/tid 或 per-id 锁）——上次整体评审遗留，唯一带正确性色彩项
-- agent 工具 max_results 无 clamp；429→401 组合无专测；两处假 key 常量不一致；citation_count:0 前端无回归测试
-- docs/s2-folks-main/ 未跟踪（S2 官方示例库参考资料，与 llm-wiki.md 等同待遇）
+- agent 轮次耗尽兜底：幻觉章节名 × find_section 兜底对多查询返回同一块内容（决策 #17 既有局限）× 循环耗尽落 agent.py:658 固定文案（已收集信息未变成回答）。改善方向：耗尽时基于 observations 合成部分回答 + 兜底重复内容检测。归 P6.2 前打磨（已修 2026-09-16，见 a13588e）
+- server.py:81 陈旧注释"双源皆败"（三源现实，一处注释）（已修 2026-09-16，见 f80feb6）
+- download_pdf .part 并发竞态唯一化（pid/tid 或 per-id 锁）——上次整体评审遗留，唯一带正确性色彩项（已修 2026-09-16，见 7148777）
+- agent 工具 max_results 无 clamp；429→401 组合无专测；两处假 key 常量不一致（已修 2026-09-16，见 f80feb6）；citation_count:0 前端无回归测试
+- docs/s2-folks-main/ 未跟踪（S2 官方示例库参考资料，与 llm-wiki.md 等同待遇）（已 gitignore 2026-09-16）
