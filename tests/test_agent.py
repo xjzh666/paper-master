@@ -1154,13 +1154,16 @@ def test_record_observation_sources_description_uses_src_label_format():
 # ── search_external_papers tool (P6.1 外部论文搜索) ────────────────────
 
 
-def _fake_arxiv_result(arxiv_id, title, authors, published):
+def _fake_arxiv_result(arxiv_id, title, authors, published, **extra):
+    """extra 可覆盖 abstract，或传入 tldr / citation_count（S2 triage 字段）。"""
     from paper_reader.arxiv_search import ArxivResult
     return ArxivResult(
-        arxiv_id=arxiv_id, title=title, authors=authors, abstract="Abstract text.",
+        arxiv_id=arxiv_id, title=title, authors=authors,
+        abstract=extra.pop("abstract", "Abstract text."),
         published=published, updated=published, categories=["cs.CL"],
         pdf_url=f"https://arxiv.org/pdf/{arxiv_id}",
         abs_url=f"https://arxiv.org/abs/{arxiv_id}",
+        **extra,
     )
 
 
@@ -1181,9 +1184,18 @@ def test_search_external_papers_in_tool_list():
     assert "max_results" not in tool.parameters["required"]
 
 
+def test_search_external_papers_description_declares_triage_fields():
+    """description 声明 triage 字段：返回含被引数与摘要/tldr。"""
+    ctx = FakeCtx()
+    tools = _make_tools(ctx, FakeVisionClient(), {}, [])
+    desc = next(t for t in tools if t.name == "search_external_papers").description
+    assert "citation count" in desc
+    assert "abstract" in desc and "tldr" in desc
+
+
 def test_search_external_papers_formats_numbered_list(monkeypatch):
-    """打桩返回 (2 条, "arxiv") → 编号列表（标题/年份/作者/arxiv_id）+ 尾部
-    arxiv_id 提示；参数原样转发；source=="arxiv" 时输出与无兜底版逐字一致。"""
+    """打桩返回 (2 条, "arxiv", notice 空) → 编号列表（标题/年份/作者/arxiv_id，
+    仅年份分支）+ 每条摘要行 + 尾部 arxiv_id 提示；参数原样转发。"""
     from paper_reader import arxiv_search
     calls = []
 
@@ -1203,11 +1215,90 @@ def test_search_external_papers_formats_numbered_list(monkeypatch):
     lines = result.text.split("\n")
     assert lines[0] == ("1. Attention Is All You Need (2015) — "
                         "A Vaswani, N Shazeer [arxiv_id: 1706.03762]")
-    assert lines[1] == ("2. Language Models are Few-Shot Learners (2020) — "
+    assert lines[1] == "摘要: Abstract text."
+    assert lines[2] == ("2. Language Models are Few-Shot Learners (2020) — "
                         "T Brown [arxiv_id: 2005.14165]")
-    assert lines[2] == ""  # 列表后空一行
-    assert lines[3] == "提示：可把上述 arxiv_id 提供给用户，在 Web 端打开对应论文。"
+    assert lines[3] == "摘要: Abstract text."
+    assert lines[4] == ""  # 列表后空一行
+    assert lines[5] == "提示：可把上述 arxiv_id 提供给用户，在 Web 端打开对应论文。"
     assert result.resources == []
+
+
+def test_search_external_papers_s2_tldr_and_citations(monkeypatch):
+    """Oracle：s2 三元组（notice 空）→ 无 notice 首行；条目行括号段
+    (年份, 被引 N)（两字段都有的分支）；摘要行 tldr 优先于 abstract。"""
+    from paper_reader import arxiv_search
+
+    stub = ([_fake_arxiv_result("2005.11401", "RAG for K", ["A"], "2020-04-30",
+                                abstract="full abstract", tldr="TL;text",
+                                citation_count=18185)], "s2", "")
+    monkeypatch.setattr(arxiv_search, "search_with_fallback",
+                        lambda query, max_results=10: stub)
+
+    result = _external_search_fn()(query="rag", max_results=1)
+
+    lines = result.text.split("\n")
+    assert lines[0] == "1. RAG for K (2020, 被引 18185) — A [arxiv_id: 2005.11401]"
+    assert lines[1] == "摘要: TL;text"
+    assert lines[2] == ""
+    assert lines[3] == "提示：可把上述 arxiv_id 提供给用户，在 Web 端打开对应论文。"
+
+
+def test_search_external_papers_abstract_truncated_to_200(monkeypatch):
+    """Oracle：tldr 空、abstract 300 字 → 摘要行为 '摘要: ' + 前 200 字。"""
+    from paper_reader import arxiv_search
+
+    stub = ([_fake_arxiv_result("2005.11401", "RAG for K", ["A"], "2020-04-30",
+                                abstract="A" * 300, tldr="",
+                                citation_count=18185)], "s2", "")
+    monkeypatch.setattr(arxiv_search, "search_with_fallback",
+                        lambda query, max_results=10: stub)
+
+    result = _external_search_fn()(query="rag", max_results=1)
+
+    lines = result.text.split("\n")
+    assert lines[1] == "摘要: " + "A" * 200
+
+
+def test_search_external_papers_notice_first_line_minimal_entry(monkeypatch):
+    """Oracle：S2 降级 notice 作首行；published 空 + citation_count None +
+    摘要空 → 条目行整个括号段省略、无摘要行（永不出现 '被引 None' / '(, )'）。"""
+    from paper_reader import arxiv_search
+
+    stub = ([_fake_arxiv_result("2005.11401", "RAG for K", ["A"], "",
+                                abstract="", tldr="",
+                                citation_count=None)],
+            "arxiv", "[Semantic Scholar 不可用，以下为 arXiv 检索结果]")
+    monkeypatch.setattr(arxiv_search, "search_with_fallback",
+                        lambda query, max_results=10: stub)
+
+    result = _external_search_fn()(query="rag", max_results=1)
+
+    lines = result.text.split("\n")
+    assert lines[0] == "[Semantic Scholar 不可用，以下为 arXiv 检索结果]"
+    assert lines[1] == "1. RAG for K — A [arxiv_id: 2005.11401]"
+    assert lines[2] == ""
+    assert lines[3] == "提示：可把上述 arxiv_id 提供给用户，在 Web 端打开对应论文。"
+    assert "被引 None" not in result.text
+    assert "(, )" not in result.text
+
+
+def test_search_external_papers_citation_only_paren_zero(monkeypatch):
+    """仅被引数分支：published 空、citation_count=0 → (被引 0)；0 不当
+    None 省略；openalex notice 同样作首行（非硬编码）。"""
+    from paper_reader import arxiv_search
+
+    stub = ([_fake_arxiv_result("2005.11401", "RAG for K", ["A"], "",
+                                abstract="", tldr="", citation_count=0)],
+            "openalex", "[arXiv 暂不可用，以下为 OpenAlex 兜底结果]")
+    monkeypatch.setattr(arxiv_search, "search_with_fallback",
+                        lambda query, max_results=10: stub)
+
+    result = _external_search_fn()(query="rag", max_results=1)
+
+    lines = result.text.split("\n")
+    assert lines[0] == "[arXiv 暂不可用，以下为 OpenAlex 兜底结果]"
+    assert lines[1] == "1. RAG for K (被引 0) — A [arxiv_id: 2005.11401]"
 
 
 def test_search_external_papers_empty_results(monkeypatch):
@@ -1222,7 +1313,8 @@ def test_search_external_papers_empty_results(monkeypatch):
 
 
 def test_search_external_papers_openalex_fallback_header(monkeypatch):
-    """source=="openalex" → 文本首行兜底标注，其余格式不变。"""
+    """source=="openalex" → 首行为三元组 notice（旧硬编码标注已删除，单源），
+    其余格式不变。"""
     from paper_reader import arxiv_search
     calls = []
 
@@ -1241,8 +1333,9 @@ def test_search_external_papers_openalex_fallback_header(monkeypatch):
     assert lines[0] == "[arXiv 暂不可用，以下为 OpenAlex 兜底结果]"
     assert lines[1] == ("1. RAPTOR: Recursive Abstractive Processing (2023) — "
                         "S Saroff [arxiv_id: 2312.10997]")
-    assert lines[2] == ""  # 列表后空一行
-    assert lines[3] == "提示：可把上述 arxiv_id 提供给用户，在 Web 端打开对应论文。"
+    assert lines[2] == "摘要: Abstract text."
+    assert lines[3] == ""  # 列表后空一行
+    assert lines[4] == "提示：可把上述 arxiv_id 提供给用户，在 Web 端打开对应论文。"
     assert result.resources == []
 
 

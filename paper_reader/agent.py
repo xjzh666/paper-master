@@ -310,18 +310,28 @@ def _make_tools(ctx, vision_client, resources_store: dict, observations_store: l
 
     def search_external_papers(query: str, max_results: int = 10) -> ToolResult:
         # 异常不在此捕获：网络错误由 agent 循环统一兜底为 [工具执行失败: ...]
-        results, source, _notice = arxiv_search.search_with_fallback(query, max_results)
+        # source 不再单独消费：降级标注统一由 notice 承担（首行）。
+        results, _source, notice = arxiv_search.search_with_fallback(query, max_results)
         lines = []
-        if source == "openalex":
-            lines.append("[arXiv 暂不可用，以下为 OpenAlex 兜底结果]")
+        if notice:
+            lines.append(notice)
         if not results:
             lines.append("[外部检索无结果]")
             return ToolResult(text="\n".join(lines))
-        lines += [
-            f"{i}. {r.title} ({r.published[:4]}) — {', '.join(r.authors)} "
-            f"[arxiv_id: {r.arxiv_id}]"
-            for i, r in enumerate(results, start=1)
-        ]
+        for i, r in enumerate(results, start=1):
+            meta = []
+            if r.published[:4]:
+                meta.append(r.published[:4])
+            if r.citation_count is not None:
+                meta.append(f"被引 {r.citation_count}")
+            paren = f" ({', '.join(meta)})" if meta else ""
+            lines.append(
+                f"{i}. {r.title}{paren} — {', '.join(r.authors)} "
+                f"[arxiv_id: {r.arxiv_id}]"
+            )
+            abstract = r.tldr or r.abstract
+            if abstract:
+                lines.append(f"摘要: {abstract[:200]}")
         lines.append("")
         lines.append("提示：可把上述 arxiv_id 提供给用户，在 Web 端打开对应论文。")
         return ToolResult(text="\n".join(lines))
@@ -421,8 +431,10 @@ def _make_tools(ctx, vision_client, resources_store: dict, observations_store: l
                 "Search arXiv for external papers by keyword, beyond the currently open "
                 "paper and the local library. Use when the user asks to find papers or "
                 "survey a research direction (e.g. '帮我找某方向的论文'). Returns a "
-                "numbered list with title, year, authors and arxiv_id; the arxiv_id can "
-                "be given to the user to open the corresponding paper in the Web UI."
+                "numbered list with title, year, authors, citation count, abstract or "
+                "tldr and arxiv_id; use citations and abstracts to judge whether a paper "
+                "is worth a close read. The arxiv_id can be given to the user to open "
+                "the corresponding paper in the Web UI."
             ),
             parameters={
                 "type": "object",
