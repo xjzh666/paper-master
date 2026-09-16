@@ -2,6 +2,7 @@
 """arxiv_search 单测：零触网（urllib.request.urlopen 全打桩，Atom 响应用
 录制片段做 fixture）；限速测试打桩 time（FakeClock），全程不真睡。"""
 import io
+import json
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -570,11 +571,13 @@ class TestSearchWithFallback:
         lambda: URLError("timeout"),
         lambda: OSError("connection reset"),
         lambda: ET.ParseError("unparseable payload"),
-    ], ids=["rate-limit", "s2-error", "urlerror", "oserror", "parse-error"])
+        lambda: json.JSONDecodeError("Expecting value", "x", 0),
+    ], ids=["rate-limit", "s2-error", "urlerror", "oserror", "parse-error",
+            "json-decode-error"])
     def test_s2_failure_falls_back_to_arxiv_with_notice(
         self, monkeypatch, raise_
     ):
-        """Oracle：配 key 但 S2 失败（五类异常）→ 落 arXiv，
+        """Oracle：配 key 但 S2 失败（六类异常）→ 落 arXiv，
         notice 为 S2 不可用标注（逐字）。"""
         r2 = _result()
         monkeypatch.setattr(s2_search, "search", _raiser(raise_()))

@@ -118,6 +118,7 @@ def search_with_fallback(
             urllib.error.URLError,
             OSError,
             ET.ParseError,
+            ValueError,
         ):
             notice = "[Semantic Scholar 不可用，以下为 arXiv 检索结果]"
     try:
