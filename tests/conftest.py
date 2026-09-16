@@ -8,6 +8,9 @@ import pytest
 
 import paper_reader.s2_search as s2_search
 
+#: 假 key（非真值）：s2_enabled fixture 与 test_s2_search 共用，绝不触网
+FAKE_KEY = "fake-s2-key-not-a-real-secret"
+
 
 class _FakeModel:
     """Fake embedding model: simple word-overlap vector, fast and semantic-ish.
@@ -91,7 +94,7 @@ def s2_enabled(monkeypatch):
     打桩在 load_api_key（模块属性），优先于任何 load_config 状态生效；
     s2_search.search 仍由各测试自行打桩，绝不触网。
     """
-    monkeypatch.setattr(s2_search, "load_api_key", lambda: "fake-s2-key")
+    monkeypatch.setattr(s2_search, "load_api_key", lambda: FAKE_KEY)
 
 
 @pytest.fixture

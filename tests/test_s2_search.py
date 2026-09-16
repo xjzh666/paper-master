@@ -14,9 +14,7 @@ import yaml
 
 import paper_reader.s2_search as s2_search
 from paper_reader.arxiv_search import ArxivResult
-
-#: 假 key（非真值）：仅用于断言请求头透传，绝不触网
-FAKE_KEY = "fake-s2-key-not-a-real-secret"
+from tests.conftest import FAKE_KEY
 
 _SEARCH_API = "https://api.semanticscholar.org/graph/v1/paper/search"
 _FIELDS = "title,authors,abstract,tldr,citationCount,externalIds,year"

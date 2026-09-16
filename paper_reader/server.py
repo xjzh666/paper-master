@@ -78,7 +78,7 @@ def create_app(data_dir: Path | None = None,
                 q, max_results=max_results)
         except Exception as e:
             # ArxivRateLimitError 已被 search_with_fallback 吃掉降级 OpenAlex，
-            # 走到这里说明双源皆败（open 端点下载仍会 429，那边保留专属分支）
+            # 走到这里说明三源皆败（open 端点下载仍会 429，那边保留专属分支）
             raise HTTPException(status_code=502, detail=f"外部检索失败: {e}")
         return {"results": [asdict(r) for r in results], "source": source}
 
