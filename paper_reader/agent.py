@@ -428,7 +428,8 @@ def _make_tools(ctx, vision_client, resources_store: dict, observations_store: l
         Tool(
             name="search_external_papers",
             description=(
-                "Search arXiv for external papers by keyword, beyond the currently open "
+                "Search external papers by keyword (Semantic Scholar primary, "
+                "arXiv/OpenAlex fallback), beyond the currently open "
                 "paper and the local library. Use when the user asks to find papers or "
                 "survey a research direction (e.g. '帮我找某方向的论文'). Returns a "
                 "numbered list with title, year, authors, citation count, abstract or "
@@ -439,7 +440,7 @@ def _make_tools(ctx, vision_client, resources_store: dict, observations_store: l
             parameters={
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Search query in English (arXiv metadata is in English)"},
+                    "query": {"type": "string", "description": "Search query in English (paper metadata is in English)"},
                     "max_results": {"type": "integer", "description": "Maximum number of results to return, default 10"},
                 },
                 "required": ["query"],

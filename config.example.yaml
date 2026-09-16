@@ -11,3 +11,6 @@ models:
     # base_url: "https://your-endpoint/v1"  # 可选，使用第三方 API 时填写
 zotero:
   data_dir: ""   # Zotero 数据目录（zotero.sqlite 所在目录），留空自动探测
+external_search:
+  semantic_scholar:
+    api_key: ""   # Semantic Scholar API key（www.semanticscholar.org/product/api 申请）；留空则 S2 源禁用

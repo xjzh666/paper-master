@@ -51,6 +51,13 @@ CLAUDE.md 只保留当前状态与活跃路线图；已完成条目的完整清�
   - [x] **前端 arXiv 搜索页签** — `PaperListSidebar` Tabs 新增「arXiv 搜索」：搜索结果列表 + 点击打开（走 `/api/arxiv/open` 进既有打开流程）；source 为 openalex 时结果区显示「OpenAlex 兜底」Tag
   - [x] **验证** — pytest 348 / vitest 51 全过；浏览器全链验证通过（搜索→打开→下载→MinerU 解析→三栏阅读→对话、Zotero 无回归）；期间遭遇 arXiv 全局 429，OpenAlex 兜底真实生效
   - 遗留：台账延期 Minor 与两个优化项（兜底提示增强：候选数/存活数；兜底超采样：per_page 放大再过滤）
+- [x] **P6.1 S2 主源扩展** — S2 key 获批后搜索主源切换为 Semantic Scholar（决策 #22）：结果自带摘要/tldr/引用数，agent 工具具备「值不值得下载精读」的 triage 能力；检索链 S2 → arXiv → OpenAlex（source 三值 `s2|arxiv|openalex`，notice 三态区分「未配置」与「失败」）；下载链路不变（arxiv_id → arXiv CDN）。#20 中"S2 排除"废止。提交范围 33f4042..27d081e + 本提交（config 占位 + 文档同步 + agent 工具 description 措辞）。包含：
+  - [x] **`s2_search.py`** — Semantic Scholar 客户端（主源）：GET `graph/v1/paper/search` + `x-api-key`，只留 `externalIds.ArXiv` 非空的记录；1rps 限速闸；429 等 5s 重试一次；401/403 坏 key 抛 `S2Error` + warning（可诊断）；`load_api_key()` 读 config.yaml `external_search.semantic_scholar.api_key`（缺失/为空即禁用 S2 源；config.example.yaml 留空占位，真实 key 不入 git）
+  - [x] **`ArxivResult` 扩展 + 编排链重排（`arxiv_search.py`）** — 新增带默认值字段 `tldr`/`citation_count`（arXiv/OpenAlex 腿不填）；`search_with_fallback` 返回三元组 `(results, source, notice)`，S2 未配置静默走 arXiv、配置但失败降级并 notice 标注；空结果不触发兜底；conftest autouse fixture 默认禁用 S2（配 key 机器上测试不真触网）
+  - [x] **OpenAlex 末位腿改进（`openalex_search.py`）** — filter 加 arXiv 主位置（source `S4306400194`），提取优先级 doi → `best_oa_location.pdf_url` → `primary_location.landing_page_url`，可提取率实测 1/10→10/10
+  - [x] **server + 前端** — `/api/arxiv/search` 透传 source 三值（notice 不进前端响应）；前端 source=='s2' 蓝 Tag「Semantic Scholar」、作者行追加「被引 N」；client.ts source 类型三值 + `tldr?`/`citation_count?`
+  - [x] **agent 工具输出增强（`agent.py`）** — 每条含「被引 N」（citation_count 非 None 时）与摘要行（tldr 优先，截断 200 字），首行 notice；description 更新为多源现实（S2 主源、arXiv/OpenAlex 兜底）
+  - [x] **验证** — pytest 392 / vitest 55 全过（含 agent.py description 措辞更新后复跑 tests/test_agent.py 79 passed）；实测依据：搜索 10/10 带 arXiv id/摘要/tldr；浏览器真实 key 全链验证为独立后续任务（spec 验收第 9 条）
 
 ## 阶段详情（已完成阶段）
 
