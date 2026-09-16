@@ -105,7 +105,7 @@ papers/                  # 测试用 PDF 论文（gitignore）
 
 #### P6.1 外部论文搜索 ✅ 完成
 
-摆脱 Zotero 本地库限制，按查询获取外部论文。**最小可用闭环：查询 → 结果列表 → 获取原文 PDF → 进入现有解析/阅读/对话流程**。选型（决策 #20）：arXiv 单源起步，Semantic Scholar 排除；2026-09-14 范围扩展（决策 #21）：429 退避重试 + OpenAlex 降级兜底（arXiv 全局 429 事件后批准）；2026-09-15 S2 主源扩展（决策 #22）：Semantic Scholar 升搜索首源（带 key，结果自带摘要/tldr/引用数供 triage），arXiv 降第二源、OpenAlex 第三，#20 中"S2 排除"废止，下载链路不变。实测结论：浏览器全链验证通过（搜索→打开→下载→解析→三栏阅读→对话、Zotero 无回归）；期间遭遇 arXiv 全局 429，OpenAlex 兜底真实生效。设计 spec：`docs/onegate/specs/2026-09-11-external-paper-search.md`、`docs/onegate/specs/2026-09-15-s2-primary-search.md`。（此条反转早期"明确暂不做上网搜论文"的决策，理由：自主调研目标下本地库覆盖不了获取端。）
+摆脱 Zotero 本地库限制，按查询获取外部论文。**最小可用闭环：查询 → 结果列表 → 获取原文 PDF → 进入现有解析/阅读/对话流程**。选型（决策 #20）：arXiv 单源起步，Semantic Scholar 排除；2026-09-14 范围扩展（决策 #21）：429 退避重试 + OpenAlex 降级兜底（arXiv 全局 429 事件后批准）；2026-09-15 S2 主源扩展（决策 #22）：Semantic Scholar 升搜索首源（带 key，结果自带摘要/tldr/引用数供 triage），arXiv 降第二源、OpenAlex 第三，#20 中"S2 排除"废止，下载链路不变。实测结论：浏览器全链验证通过（搜索→打开→下载→解析→三栏阅读→对话、Zotero 无回归）；期间遭遇 arXiv 全局 429，OpenAlex 兜底真实生效。设计 spec：`docs/onegate/specs/2026-09-11-external-paper-search.md`、`docs/onegate/specs/2026-09-15-s2-primary-search.md`（内含遗留清单：侧栏摘要行数、agent 轮次耗尽兜底等打磨项）。工作在分支 `p61-external-paper-search`（保留未合并，最终提交 9a48ce5）。（此条反转早期"明确暂不做上网搜论文"的决策，理由：自主调研目标下本地库覆盖不了获取端。）
 
 #### P6.2 llmwiki 知识库（下一步）
 
