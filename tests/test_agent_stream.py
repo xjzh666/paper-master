@@ -90,6 +90,32 @@ def test_run_stream_cap_emits_fallback_answer_chunk():
     assert any("抱歉" in c for c in chunks)
 
 
+def test_run_stream_synthesis_round_emits_answer_chunks():
+    """轮次耗尽且已有 observations → 第 8 次空工具合成调用，其 text_delta
+    逐段以 answer_chunk 发出。"""
+    ctx = FakeCtx()
+    streams = [[("tool_calls", [{"id": f"c{i}", "name": "search_paper",
+                                 "arguments": '{"query":"x"}'}])] for i in range(6)]
+    streams.append([("tool_calls", [{"id": "c_obs", "name": "record_observation",
+                                     "arguments": '{"summary":"发现"}'}])])
+    streams.append([("text_delta", "根据已收集信息"),
+                    ("text_delta", "：部分回答"),
+                    ("tool_calls", [])])
+    text_client = FakeStreamTextClient(streams=streams)
+    agent = PaperAgent(text_client=text_client,
+                       vision_client=FakeVisionClient(), ctx=ctx)
+    events: list[tuple[str, dict]] = []
+    answer = agent.run_stream(question="Q", history=[],
+                              on_event=lambda t, p: events.append((t, p)))
+
+    assert answer == "根据已收集信息：部分回答"
+    chunks = [p["delta"] for t, p in events if t == "answer_chunk"]
+    assert chunks == ["根据已收集信息", "：部分回答"]
+    assert len(text_client.calls) == 8
+    assert text_client.calls[7]["tools"] == []
+    assert text_client.calls[7]["messages"][-1]["role"] == "user"
+
+
 def test_run_still_works_non_stream():
     ctx = FakeCtx()
     text_client = FakeTextClient(responses=[LLMToolResponse(text="fallback")])

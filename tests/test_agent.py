@@ -235,6 +235,79 @@ def test_get_section_truncates_long_content():
     assert "已截断" in result.text
 
 
+# ── get_section 重复内容检测 ───────────────────────────────────────────
+
+
+def _section_fn_with_find(ctx, find_section):
+    """打桩 ctx.find_section 后返回 get_section 工具闭包。"""
+    ctx.find_section = find_section
+    tools = _make_tools(ctx, FakeVisionClient(), {}, [])
+    return next(t for t in tools if t.name == "get_section").callable
+
+
+def test_get_section_duplicate_blocks_hint_on_second_query():
+    """两次查询命中同一组块 → 第二次返回文本最前面带重复提示行，首查无提示。"""
+    from paper_reader.blocks import ContentBlock
+    blocks = [ContentBlock(type="text", text="Section body content", level=0, page_idx=0)]
+    section_fn = _section_fn_with_find(FakeCtx(), lambda reference: blocks)
+
+    first = section_fn(reference="A")
+    second = section_fn(reference="B")
+
+    assert not first.text.startswith("[提示")
+    assert second.text.startswith(
+        "[提示：与此前查询「A」的结果高度重复，请勿重复检索相同章节]\n\n"
+    )
+
+
+def test_get_section_half_overlap_counts_as_duplicate():
+    """重叠率恰好 50%（>= 0.5 边界）即视为重复。"""
+    from paper_reader.blocks import ContentBlock
+    b1 = ContentBlock(type="text", text="shared", level=0, page_idx=0)
+    b2 = ContentBlock(type="text", text="only in A", level=0, page_idx=1)
+    b3 = ContentBlock(type="text", text="only in B", level=0, page_idx=2)
+    by_ref = {"A": [b1, b2], "B": [b1, b3]}
+    section_fn = _section_fn_with_find(FakeCtx(), lambda reference: by_ref[reference])
+
+    section_fn(reference="A")
+    second = section_fn(reference="B")
+
+    assert second.text.startswith("[提示：与此前查询「A」")
+
+
+def test_get_section_disjoint_blocks_no_hint():
+    """两次查询返回不相交块集合 → 第二次无提示。"""
+    from paper_reader.blocks import ContentBlock
+    a = [ContentBlock(type="text", text="alpha body", level=0, page_idx=0)]
+    b = [ContentBlock(type="text", text="beta body", level=0, page_idx=1)]
+    by_ref = {"A": a, "B": b}
+    section_fn = _section_fn_with_find(FakeCtx(), lambda reference: by_ref[reference])
+
+    section_fn(reference="A")
+    second = section_fn(reference="B")
+
+    assert "[提示" not in second.text
+
+
+def test_get_section_not_found_not_recorded_in_hits():
+    """未找到（None）不进历史：首查 None、次查命中相同块 → 无提示。"""
+    from paper_reader.blocks import ContentBlock
+    blocks = [ContentBlock(type="text", text="body", level=0, page_idx=0)]
+    state = {"calls": 0}
+
+    def fake_find(reference):
+        state["calls"] += 1
+        return None if state["calls"] == 1 else blocks
+
+    section_fn = _section_fn_with_find(FakeCtx(), fake_find)
+
+    first = section_fn(reference="A")
+    second = section_fn(reference="A")
+
+    assert "未找到章节" in first.text
+    assert "[提示" not in second.text
+
+
 def test_describe_image_tool():
     vision = FakeVisionClient()
     store = {
@@ -441,6 +514,72 @@ def test_agent_max_rounds_enforced():
     answer = agent.run(question="test", history=[])
     assert "暂时没能找到相关信息" in answer
     assert len(text_client.calls) == 7
+
+
+# ── 轮次耗尽合成部分回答 ───────────────────────────────────────────────
+
+
+def _exhaustion_responses(final_text=None):
+    """7 轮 tool_calls（含一轮 record_observation）+ 可选第 8 次文本响应。"""
+    responses = [
+        LLMToolResponse(tool_calls=[{
+            "id": f"call_{i}",
+            "name": "search_paper",
+            "arguments": '{"query":"test"}',
+        }])
+        for i in range(6)
+    ]
+    responses.append(LLMToolResponse(tool_calls=[{
+        "id": "call_obs",
+        "name": "record_observation",
+        "arguments": '{"summary":"已找到部分证据"}',
+    }]))
+    if final_text is not None:
+        responses.append(LLMToolResponse(text=final_text))
+    return responses
+
+
+def test_agent_synthesizes_partial_answer_on_round_exhaustion():
+    """7 轮 tool_calls 且含 record_observation → 第 8 次空工具合成调用，
+    其文本作为答案返回（已收集 observations 不作废）。"""
+    ctx = FakeCtx()
+    text_client = FakeTextClient(
+        responses=_exhaustion_responses(final_text="根据已收集信息：部分回答"))
+    agent = PaperAgent(text_client=text_client, vision_client=FakeVisionClient(), ctx=ctx)
+
+    answer = agent.run(question="test", history=[])
+
+    assert answer == "根据已收集信息：部分回答"
+    assert "抱歉" not in answer
+    assert len(text_client.calls) == 8
+    # 合成调用不带任何工具；末条消息是追加的合成指令（user）
+    assert text_client.calls[7]["tools"] == []
+    last_msg = text_client.calls[7]["messages"][-1]
+    assert last_msg["role"] == "user"
+    assert "不要调用任何工具" in last_msg["content"]
+
+
+class SynthesisBoomTextClient(FakeTextClient):
+    """第 8 次（空工具的合成）调用抛 RuntimeError，其余按脚本返回。"""
+
+    def chat_with_tools(self, messages, tools, system_prompt=""):
+        if tools == [] and len(self.calls) == 7:
+            self.calls.append({"messages": list(messages), "tools": tools,
+                               "system_prompt": system_prompt})
+            raise RuntimeError("synthesis boom")
+        return super().chat_with_tools(messages, tools, system_prompt)
+
+
+def test_agent_synthesis_failure_falls_back_to_fixed_answer():
+    """合成调用抛 RuntimeError → 落回固定文案，异常不向上抛。"""
+    ctx = FakeCtx()
+    text_client = SynthesisBoomTextClient(responses=_exhaustion_responses())
+    agent = PaperAgent(text_client=text_client, vision_client=FakeVisionClient(), ctx=ctx)
+
+    answer = agent.run(question="test", history=[])
+
+    assert answer == "抱歉，暂时没能找到相关信息，请尝试换一个问法。"
+    assert len(text_client.calls) == 8  # 合成调用确实发起过（失败被吞）
 
 
 def test_agent_injects_memory_into_system_prompt():
@@ -831,6 +970,27 @@ def test_agent_clears_tool_round_map_on_new_run():
     assert len(agent._tool_round_map) == 0
 
 
+def test_agent_clears_section_hits_on_new_run():
+    """section_hits 与 observations 同为 per-run 生命周期：新 run() 清空。"""
+    ctx = FakeCtx()
+    text_client = FakeTextClient(responses=[
+        LLMToolResponse(tool_calls=[{
+            "id": "call_1",
+            "name": "get_section",
+            "arguments": '{"reference":"Methods"}',
+        }]),
+        LLMToolResponse(text="答"),
+        LLMToolResponse(text="又答"),
+    ])
+    agent = PaperAgent(text_client=text_client, vision_client=FakeVisionClient(), ctx=ctx)
+
+    agent.run(question="q1", history=[])
+    assert len(agent._section_hits) == 1
+
+    agent.run(question="q2", history=[])
+    assert len(agent._section_hits) == 0
+
+
 def test_agent_injects_toc_into_system_prompt():
     ctx = FakeCtx()
     text_client = FakeTextClient(responses=[LLMToolResponse(text="got it")])
@@ -1149,3 +1309,254 @@ def test_record_observation_sources_description_uses_src_label_format():
     desc = tool.parameters["properties"]["sources"]["description"]
     assert "chunk_" in desc
     assert "['chunk_3 §3.2 p.4']" in desc
+
+
+# ── search_external_papers tool (P6.1 外部论文搜索) ────────────────────
+
+
+def _fake_arxiv_result(arxiv_id, title, authors, published, **extra):
+    """extra 可覆盖 abstract，或传入 tldr / citation_count（S2 triage 字段）。"""
+    from paper_reader.arxiv_search import ArxivResult
+    return ArxivResult(
+        arxiv_id=arxiv_id, title=title, authors=authors,
+        abstract=extra.pop("abstract", "Abstract text."),
+        published=published, updated=published, categories=["cs.CL"],
+        pdf_url=f"https://arxiv.org/pdf/{arxiv_id}",
+        abs_url=f"https://arxiv.org/abs/{arxiv_id}",
+        **extra,
+    )
+
+
+def _external_search_fn():
+    tools = _make_tools(FakeCtx(), FakeVisionClient(), {}, [])
+    return next(t for t in tools if t.name == "search_external_papers").callable
+
+
+def test_search_external_papers_in_tool_list():
+    """工具集含 search_external_papers，schema 有 query（必填）与 max_results（可选）。"""
+    ctx = FakeCtx()
+    tools = _make_tools(ctx, FakeVisionClient(), {}, [])
+    tool = next(t for t in tools if t.name == "search_external_papers")
+    props = tool.parameters["properties"]
+    assert props["query"]["type"] == "string"
+    assert "query" in tool.parameters["required"]
+    assert props["max_results"]["type"] == "integer"
+    assert "max_results" not in tool.parameters["required"]
+
+
+def test_search_external_papers_description_declares_triage_fields():
+    """description 声明 triage 字段：返回含被引数与摘要/tldr。"""
+    ctx = FakeCtx()
+    tools = _make_tools(ctx, FakeVisionClient(), {}, [])
+    desc = next(t for t in tools if t.name == "search_external_papers").description
+    assert "citation count" in desc
+    assert "abstract" in desc and "tldr" in desc
+
+
+def test_search_external_papers_formats_numbered_list(monkeypatch):
+    """打桩返回 (2 条, "arxiv", notice 空) → 编号列表（标题/年份/作者/arxiv_id，
+    仅年份分支）+ 每条摘要行 + 尾部 arxiv_id 提示；参数原样转发。"""
+    from paper_reader import arxiv_search
+    calls = []
+
+    def fake_fallback(query, max_results=10):
+        calls.append((query, max_results))
+        return [
+            _fake_arxiv_result("1706.03762", "Attention Is All You Need",
+                               ["A Vaswani", "N Shazeer"], "2015-06-12T00:00:00Z"),
+            _fake_arxiv_result("2005.14165", "Language Models are Few-Shot Learners",
+                               ["T Brown"], "2020-05-28T00:00:00Z"),
+        ], "arxiv", ""
+
+    monkeypatch.setattr(arxiv_search, "search_with_fallback", fake_fallback)
+    result = _external_search_fn()(query="rag", max_results=2)
+
+    assert calls == [("rag", 2)]  # (query, max_results) 原样转发
+    lines = result.text.split("\n")
+    assert lines[0] == ("1. Attention Is All You Need (2015) — "
+                        "A Vaswani, N Shazeer [arxiv_id: 1706.03762]")
+    assert lines[1] == "摘要: Abstract text."
+    assert lines[2] == ("2. Language Models are Few-Shot Learners (2020) — "
+                        "T Brown [arxiv_id: 2005.14165]")
+    assert lines[3] == "摘要: Abstract text."
+    assert lines[4] == ""  # 列表后空一行
+    assert lines[5] == "提示：可把上述 arxiv_id 提供给用户，在 Web 端打开对应论文。"
+    assert result.resources == []
+
+
+def test_search_external_papers_s2_tldr_and_citations(monkeypatch):
+    """Oracle：s2 三元组（notice 空）→ 无 notice 首行；条目行括号段
+    (年份, 被引 N)（两字段都有的分支）；摘要行 tldr 优先于 abstract。"""
+    from paper_reader import arxiv_search
+
+    stub = ([_fake_arxiv_result("2005.11401", "RAG for K", ["A"], "2020-04-30",
+                                abstract="full abstract", tldr="TL;text",
+                                citation_count=18185)], "s2", "")
+    monkeypatch.setattr(arxiv_search, "search_with_fallback",
+                        lambda query, max_results=10: stub)
+
+    result = _external_search_fn()(query="rag", max_results=1)
+
+    lines = result.text.split("\n")
+    assert lines[0] == "1. RAG for K (2020, 被引 18185) — A [arxiv_id: 2005.11401]"
+    assert lines[1] == "摘要: TL;text"
+    assert lines[2] == ""
+    assert lines[3] == "提示：可把上述 arxiv_id 提供给用户，在 Web 端打开对应论文。"
+
+
+def test_search_external_papers_abstract_truncated_to_200(monkeypatch):
+    """Oracle：tldr 空、abstract 300 字 → 摘要行为 '摘要: ' + 前 200 字。"""
+    from paper_reader import arxiv_search
+
+    stub = ([_fake_arxiv_result("2005.11401", "RAG for K", ["A"], "2020-04-30",
+                                abstract="A" * 300, tldr="",
+                                citation_count=18185)], "s2", "")
+    monkeypatch.setattr(arxiv_search, "search_with_fallback",
+                        lambda query, max_results=10: stub)
+
+    result = _external_search_fn()(query="rag", max_results=1)
+
+    lines = result.text.split("\n")
+    assert lines[1] == "摘要: " + "A" * 200
+
+
+def test_search_external_papers_notice_first_line_minimal_entry(monkeypatch):
+    """Oracle：S2 降级 notice 作首行；published 空 + citation_count None +
+    摘要空 → 条目行整个括号段省略、无摘要行（永不出现 '被引 None' / '(, )'）。"""
+    from paper_reader import arxiv_search
+
+    stub = ([_fake_arxiv_result("2005.11401", "RAG for K", ["A"], "",
+                                abstract="", tldr="",
+                                citation_count=None)],
+            "arxiv", "[Semantic Scholar 不可用，以下为 arXiv 检索结果]")
+    monkeypatch.setattr(arxiv_search, "search_with_fallback",
+                        lambda query, max_results=10: stub)
+
+    result = _external_search_fn()(query="rag", max_results=1)
+
+    lines = result.text.split("\n")
+    assert lines[0] == "[Semantic Scholar 不可用，以下为 arXiv 检索结果]"
+    assert lines[1] == "1. RAG for K — A [arxiv_id: 2005.11401]"
+    assert lines[2] == ""
+    assert lines[3] == "提示：可把上述 arxiv_id 提供给用户，在 Web 端打开对应论文。"
+    assert "被引 None" not in result.text
+    assert "(, )" not in result.text
+
+
+def test_search_external_papers_citation_only_paren_zero(monkeypatch):
+    """仅被引数分支：published 空、citation_count=0 → (被引 0)；0 不当
+    None 省略；openalex notice 同样作首行（非硬编码）。"""
+    from paper_reader import arxiv_search
+
+    stub = ([_fake_arxiv_result("2005.11401", "RAG for K", ["A"], "",
+                                abstract="", tldr="", citation_count=0)],
+            "openalex", "[arXiv 暂不可用，以下为 OpenAlex 兜底结果]")
+    monkeypatch.setattr(arxiv_search, "search_with_fallback",
+                        lambda query, max_results=10: stub)
+
+    result = _external_search_fn()(query="rag", max_results=1)
+
+    lines = result.text.split("\n")
+    assert lines[0] == "[arXiv 暂不可用，以下为 OpenAlex 兜底结果]"
+    assert lines[1] == "1. RAG for K (被引 0) — A [arxiv_id: 2005.11401]"
+
+
+def test_search_external_papers_empty_results(monkeypatch):
+    """打桩返回 ([], "arxiv") → 恰为 '[外部检索无结果]'。"""
+    from paper_reader import arxiv_search
+    monkeypatch.setattr(arxiv_search, "search_with_fallback",
+                        lambda query, max_results=10: ([], "arxiv", ""))
+
+    result = _external_search_fn()(query="nonexistent topic")
+    assert result.text == "[外部检索无结果]"
+    assert result.resources == []
+
+
+def test_search_external_papers_openalex_fallback_header(monkeypatch):
+    """source=="openalex" → 首行为三元组 notice（旧硬编码标注已删除，单源），
+    其余格式不变。"""
+    from paper_reader import arxiv_search
+    calls = []
+
+    def fake_fallback(query, max_results=10):
+        calls.append((query, max_results))
+        return [
+            _fake_arxiv_result("2312.10997", "RAPTOR: Recursive Abstractive Processing",
+                               ["S Saroff"], "2023-12-18T00:00:00Z"),
+        ], "openalex", "[arXiv 暂不可用，以下为 OpenAlex 兜底结果]"
+
+    monkeypatch.setattr(arxiv_search, "search_with_fallback", fake_fallback)
+    result = _external_search_fn()(query="raptor", max_results=1)
+
+    assert calls == [("raptor", 1)]
+    lines = result.text.split("\n")
+    assert lines[0] == "[arXiv 暂不可用，以下为 OpenAlex 兜底结果]"
+    assert lines[1] == ("1. RAPTOR: Recursive Abstractive Processing (2023) — "
+                        "S Saroff [arxiv_id: 2312.10997]")
+    assert lines[2] == "摘要: Abstract text."
+    assert lines[3] == ""  # 列表后空一行
+    assert lines[4] == "提示：可把上述 arxiv_id 提供给用户，在 Web 端打开对应论文。"
+    assert result.resources == []
+
+
+def test_search_external_papers_openalex_empty_results(monkeypatch):
+    """source=="openalex" 且空结果 → 首行兜底标注 + [外部检索无结果]。"""
+    from paper_reader import arxiv_search
+    monkeypatch.setattr(arxiv_search, "search_with_fallback",
+                        lambda query, max_results=10: (
+                            [], "openalex", "[arXiv 暂不可用，以下为 OpenAlex 兜底结果]"))
+
+    result = _external_search_fn()(query="nonexistent topic")
+
+    assert result.text == ("[arXiv 暂不可用，以下为 OpenAlex 兜底结果]"
+                           "\n[外部检索无结果]")
+    assert result.resources == []
+
+
+def test_search_external_papers_rate_limit_falls_back(monkeypatch):
+    """Oracle：arXiv 打桩抛 ArxivRateLimitError、OpenAlex 打桩返回 1 条
+    （走真 search_with_fallback 编排）→ 工具文本首行为兜底标注。"""
+    from paper_reader import arxiv_search
+    import paper_reader.openalex_search as openalex_search
+
+    def rate_limited(query, max_results=10):
+        raise arxiv_search.ArxivRateLimitError()
+
+    monkeypatch.setattr(arxiv_search, "search", rate_limited)
+    monkeypatch.setattr(
+        openalex_search, "search",
+        lambda query, max_results=10: [
+            _fake_arxiv_result("2312.10997", "RAPTOR", ["S Saroff"],
+                               "2023-12-18T00:00:00Z"),
+        ])
+
+    result = _external_search_fn()(query="raptor")
+
+    assert result.text.split("\n")[0] == "[arXiv 暂不可用，以下为 OpenAlex 兜底结果]"
+
+
+def test_search_external_papers_error_becomes_tool_failure(monkeypatch):
+    """工具自身不吞异常：search_with_fallback 抛错（双源皆败）由 agent
+    循环兜底转成 '[工具执行失败: ...]'。"""
+    from paper_reader import arxiv_search
+
+    def boom(query, max_results=10):
+        raise ConnectionError("network down")
+
+    monkeypatch.setattr(arxiv_search, "search_with_fallback", boom)
+
+    ctx = FakeCtx()
+    text_client = FakeTextClient(responses=[
+        LLMToolResponse(tool_calls=[{
+            "id": "call_1",
+            "name": "search_external_papers",
+            "arguments": '{"query":"rag","max_results":2}',
+        }]),
+        LLMToolResponse(text="外部检索暂时失败"),
+    ])
+    agent = PaperAgent(text_client=text_client, vision_client=FakeVisionClient(), ctx=ctx)
+
+    answer = agent.run(question="帮我找 rag 方向的论文", history=[])
+    assert answer == "外部检索暂时失败"
+    tool_msgs = [m for m in text_client.calls[1]["messages"] if m["role"] == "tool"]
+    assert tool_msgs[0]["content"] == "[工具执行失败: network down]"

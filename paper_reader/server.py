@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict
 from pathlib import Path
 
 import yaml
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
 
+import paper_reader.arxiv_search as arxiv_search
 import paper_reader.papers as papers
+from paper_reader.arxiv_search import ArxivRateLimitError
 from paper_reader.llm import load_config
 from paper_reader.zotero import ZoteroLibrary, resolve_zotero_data_dir
+
+# arxiv_id 合法格式（新式 / 旧式含可选版本号）；正则同时杜绝路径穿越
+_ARXIV_ID_RE = re.compile(r"^(\d{4}\.\d{4,5}|[a-z\-]+(\.[A-Za-z]{2})?/\d+)(v\d+)?$")
 
 
 def _config_data_dir() -> Path:
@@ -63,6 +69,36 @@ def create_app(data_dir: Path | None = None,
         if it is None:
             raise HTTPException(status_code=404, detail="item not found")
         return item_dict(it)
+
+    @app.get("/api/arxiv/search")
+    def arxiv_search_endpoint(q: str = Query(min_length=1),
+                              max_results: int = Query(10, ge=1, le=50)):
+        try:
+            results, source, _notice = arxiv_search.search_with_fallback(
+                q, max_results=max_results)
+        except Exception as e:
+            # ArxivRateLimitError 已被 search_with_fallback 吃掉降级 OpenAlex，
+            # 走到这里说明三源皆败（open 端点下载仍会 429，那边保留专属分支）
+            raise HTTPException(status_code=502, detail=f"外部检索失败: {e}")
+        return {"results": [asdict(r) for r in results], "source": source}
+
+    @app.post("/api/arxiv/open")
+    def arxiv_open(body: dict):
+        arxiv_id = body.get("arxiv_id")
+        if arxiv_id is None:
+            raise HTTPException(status_code=400, detail="missing arxiv_id")
+        if not isinstance(arxiv_id, str) or not _ARXIV_ID_RE.fullmatch(arxiv_id):
+            raise HTTPException(status_code=400, detail="invalid arxiv_id")
+        try:
+            path = arxiv_search.download_pdf(arxiv_id, arxiv_search.DEFAULT_DOWNLOAD_DIR)
+        except ArxivRateLimitError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"arXiv PDF 下载失败: {e}")
+        try:
+            return papers.open_paper(str(path))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"打开论文失败: {e}")
 
     @app.post("/api/papers/open")
     def open_paper(body: dict, lib: ZoteroLibrary = Depends(get_library)):

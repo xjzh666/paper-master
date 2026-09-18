@@ -5,6 +5,7 @@ __pycache__/
 venv/
 dist/
 .claude/worktrees/
+.claude/settings.local.json
 .agent/
 *.egg-info/
 CLAUDE.md
@@ -16,3 +17,4 @@ docs/zotero-main.zip
 docs/TencentDB-Agent-Memory-feat-server_team
 docs/claude-obsidian-main/
 docs/llm-wiki.md
+docs/s2-folks-main/

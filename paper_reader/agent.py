@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+import paper_reader.arxiv_search as arxiv_search
 from paper_reader.blocks import ContentBlock, PaperDocument, PaperMemory, SemanticChunk
 from paper_reader.observations import load_image_descriptions, save_image_descriptions
 
@@ -208,8 +209,15 @@ def _image_description_cache(ctx) -> dict:
     return ctx.image_descriptions
 
 
-def _make_tools(ctx, vision_client, resources_store: dict, observations_store: list) -> list[Tool]:
-    """Create the standard tool set for PaperAgent."""
+def _make_tools(ctx, vision_client, resources_store: dict, observations_store: list,
+                section_hits: list | None = None) -> list[Tool]:
+    """Create the standard tool set for PaperAgent.
+
+    section_hits 记录本 run 内 get_section 的既往命中（reference, 块 id 集），
+    用于重复内容检测；不传时每次 _make_tools 调用各建一个独立列表。
+    """
+    if section_hits is None:
+        section_hits = []
 
     def search_paper(query: str) -> ToolResult:
         # Exact alias match for figure/table references (Fig. 2, Table 1, 图3, etc.)
@@ -242,6 +250,16 @@ def _make_tools(ctx, vision_client, resources_store: dict, observations_store: l
         blocks = ctx.find_section(reference)
         if blocks is None:
             return ToolResult(text=f"[未找到章节: {reference}]")
+        # 重复内容检测：与既往命中按块对象身份比对，重叠率高说明多次查询
+        # 打到同一块内容（幻觉章节名 × flat-parse 兜底的典型形态）。
+        ids = frozenset(id(b) for b in blocks)
+        duplicate_ref: str | None = None
+        for prev_ref, prev_ids in section_hits:
+            min_len = min(len(ids), len(prev_ids))
+            if min_len and len(ids & prev_ids) / min_len >= 0.5:
+                duplicate_ref = prev_ref
+                break
+        section_hits.append((reference, ids))
         # 按 block→chunk 归组，每组前置该 chunk 的 [src] 标签（映射缺失的组无标签）
         parts: list[str] = []
         for chunk, group_blocks in _group_blocks_by_chunk(blocks, ctx.paper.chunks):
@@ -269,6 +287,8 @@ def _make_tools(ctx, vision_client, resources_store: dict, observations_store: l
             for r in resources:
                 lines.append(f"  [{r.id}] {r.caption or r.type}")
             text = "\n".join(lines)
+        if duplicate_ref is not None:
+            text = f"[提示：与此前查询「{duplicate_ref}」的结果高度重复，请勿重复检索相同章节]\n\n{text}"
         return ToolResult(text=text, resources=resources)
 
     def describe_image(resource_id: str) -> ToolResult:
@@ -306,6 +326,34 @@ def _make_tools(ctx, vision_client, resources_store: dict, observations_store: l
         if facts:
             parts.append("关键事实: " + "; ".join(facts))
         return ToolResult(text="\n".join(parts))
+
+    def search_external_papers(query: str, max_results: int = 10) -> ToolResult:
+        # 异常不在此捕获：网络错误由 agent 循环统一兜底为 [工具执行失败: ...]
+        # source 不再单独消费：降级标注统一由 notice 承担（首行）。
+        results, _source, notice = arxiv_search.search_with_fallback(query, max_results)
+        lines = []
+        if notice:
+            lines.append(notice)
+        if not results:
+            lines.append("[外部检索无结果]")
+            return ToolResult(text="\n".join(lines))
+        for i, r in enumerate(results, start=1):
+            meta = []
+            if r.published[:4]:
+                meta.append(r.published[:4])
+            if r.citation_count is not None:
+                meta.append(f"被引 {r.citation_count}")
+            paren = f" ({', '.join(meta)})" if meta else ""
+            lines.append(
+                f"{i}. {r.title}{paren} — {', '.join(r.authors)} "
+                f"[arxiv_id: {r.arxiv_id}]"
+            )
+            abstract = r.tldr or r.abstract
+            if abstract:
+                lines.append(f"摘要: {abstract[:200]}")
+        lines.append("")
+        lines.append("提示：可把上述 arxiv_id 提供给用户，在 Web 端打开对应论文。")
+        return ToolResult(text="\n".join(lines))
 
     return [
         Tool(
@@ -396,6 +444,28 @@ def _make_tools(ctx, vision_client, resources_store: dict, observations_store: l
             },
             callable=record_observation,
         ),
+        Tool(
+            name="search_external_papers",
+            description=(
+                "Search external papers by keyword (Semantic Scholar primary, "
+                "arXiv/OpenAlex fallback), beyond the currently open "
+                "paper and the local library. Use when the user asks to find papers or "
+                "survey a research direction (e.g. '帮我找某方向的论文'). Returns a "
+                "numbered list with title, year, authors, citation count, abstract or "
+                "tldr and arxiv_id; use citations and abstracts to judge whether a paper "
+                "is worth a close read. The arxiv_id can be given to the user to open "
+                "the corresponding paper in the Web UI."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query in English (paper metadata is in English)"},
+                    "max_results": {"type": "integer", "description": "Maximum number of results to return, default 10"},
+                },
+                "required": ["query"],
+            },
+            callable=search_external_papers,
+        ),
     ]
 
 
@@ -438,8 +508,10 @@ class PaperAgent:
         self._ctx = ctx
         self._resources: dict[str, Resource] = {}
         self._observations: list[Observation] = []
+        self._section_hits: list[tuple[str, frozenset[int]]] = []
         self._tool_round_map: dict[str, int] = {}
-        self._tools = _make_tools(ctx, vision_client, self._resources, self._observations)
+        self._tools = _make_tools(ctx, vision_client, self._resources,
+                                  self._observations, self._section_hits)
 
     def _record_tool_round(self, tool_call_id: str, round_num: int) -> None:
         self._tool_round_map[tool_call_id] = round_num
@@ -509,9 +581,10 @@ class PaperAgent:
 
         tool_schemas = [_tool_to_openai_schema(t) for t in self._tools]
 
-        # 重置轮次追踪和本轮观察（session 观察在 ctx 上，不清）
+        # 重置轮次追踪、本轮观察与 get_section 命中历史（session 观察在 ctx 上，不清）
         self._tool_round_map.clear()
         self._observations.clear()
+        self._section_hits.clear()
 
         try:
             for round_num in range(7):
@@ -603,6 +676,37 @@ class PaperAgent:
                     # 标记 record_observation 发生在哪一轮
                     if name == "record_observation" and self._observations:
                         self._observations[-1].round_num = round_num
+
+            # 轮次耗尽：已有 observations 时追加合成指令，以空工具列表再调
+            # 一次 LLM，让已收集的信息变成回答；调用失败或空文本落回固定文案。
+            if self._observations:
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "（系统提示：检索轮次已用完。请立即基于以上已收集的信息"
+                        "回答用户的原始问题；信息不足的部分明确说明。不要调用任何工具。）"
+                    ),
+                })
+                compacted_messages = self._compact_messages(messages, 7)
+                synthesized: str | None = None
+                try:
+                    if stream:
+                        text_parts = []
+                        for evt, payload in self._text_client.chat_with_tools_stream(
+                                compacted_messages, [], system_prompt=system):
+                            if evt == "text_delta":
+                                text_parts.append(payload)
+                                if on_event is not None:
+                                    on_event("answer_chunk", {"delta": payload})
+                        synthesized = "".join(text_parts)
+                    else:
+                        response = self._text_client.chat_with_tools(
+                            compacted_messages, [], system_prompt=system)
+                        synthesized = response.text
+                except Exception:
+                    synthesized = None
+                if synthesized:
+                    return synthesized
 
             if stream and on_event is not None:
                 on_event("answer_chunk", {"delta": "抱歉，暂时没能找到相关信息，请尝试换一个问法。"})

@@ -25,7 +25,8 @@ PDF → MinerU CLI (VLM 版面分析) → content_list_v2.json + images/ + .md
       ├── search_paper(query)     — BGE-M3 混合检索 + aliases 精确匹配
       ├── get_section(reference)  — 章节精确引用（编号深度有效层级 + 平层级兜底），3000 字截断
       ├── describe_image(rid)     — VLM 图片内容解析（描述按图片路径缓存 {sha}-images.json，命中不调 API）
-      └── record_observation(...) — 结构化记录发现（summary + facts + entities + sources；与当前问题无关但有价值的也记）
+      ├── record_observation(...) — 结构化记录发现（summary + facts + entities + sources；与当前问题无关但有价值的也记）
+      └── search_external_papers(query, max_results) — 外部论文搜索（S2 主源 → arXiv → OpenAlex 降级链，结果带 tldr/摘要/被引数）
   → 往轮 tool result 替换为 observation 摘要（无 observation 则智能截断降级）
   → run 结束 flush 本轮观察到 ctx.observations（打 question 标记），落盘 {sha}-observations.json
   → 中文回答
@@ -140,6 +141,35 @@ LLMToolResponse       — LLM 返回解析 {text, tool_calls}
 - **三层记忆**：L1 对话（最新轮完整，往轮压缩）、L2 Observation（结构化观察，session 级累积 + 落盘，注入最近 20 条带「未经复核」标注）、L3 Evidence（`Observation.sources` 来源追溯，P3 引用溯源已完善）
 - **压缩**：每轮发送前压缩往轮 tool result，保留最近 3 轮完整（保证模型能回读证据）；无 observation 时降级为句子边界智能截断
 
+## 外部论文搜索（P6.1）
+
+摆脱 Zotero 本地库限制，按查询获取外部论文并复用既有管线（选型见决策 #20，范围扩展见 #21，主源切换见 #22）。检索链：**Semantic Scholar（主源，配置了 key 才参与）→ arXiv → OpenAlex（降级兜底）**。**边界：下载只走 arXiv CDN**（下载流程不兜底，#21 扩展 D——arXiv PDF 域名与 export API 是不同服务，通常独立可用；#22 维持不变）。
+
+**模块职责（零第三方依赖：urllib + 标准库 XML/JSON）：**
+- `arxiv_search.py` — arXiv 搜索客户端 + 三源编排。Atom XML 解析（`search`）；模块级限速闸：任意两次 arXiv 网络调用间隔 ≥3s（search 与 download_pdf 共享，串行锁实现）；HTTP 429 等 15s 重试一次，仍 429 抛 `ArxivRateLimitError`（str 为友好文案）；`download_pdf` 原子写（先落 `.part` 全部写成功后 `os.replace`，中途失败清理且不留截断文件——防 exists 早退永久命中坏缓存；文件已存在跳过网络请求）；`search_with_fallback` 编排 S2（有 key）→ arXiv → OpenAlex 降级链，返回三元组 `(results, source, notice)`——source ∈ {"s2","arxiv","openalex"}，notice 区分「未配置」（静默走下家，空串）与「失败」（降级标注文案）；空结果不算失败、不兜底；OpenAlex 也失败时异常透传给调用方
+- `s2_search.py` — Semantic Scholar 客户端（主源）。GET `graph/v1/paper/search`（头 `x-api-key`）；只保留 `externalIds.ArXiv` 非空的记录，映射结果自带 abstract/tldr/引用数（triage 字段，arXiv/OpenAlex 腿不填）；限速闸 1 req/s（模块级时间戳 + 锁）；HTTP 429 等 5s 重试一次，仍 429 抛 `S2RateLimitError`；401/403（坏 key）抛 `S2Error` 并 logging.warning；`load_api_key()` 读 config.yaml `external_search.semantic_scholar.api_key`，缺失/为空即禁用 S2 源（编排静默跳过）
+- `openalex_search.py` — OpenAlex 薄客户端（降级兜底）。works API + mailto 礼貌参数；filter 把主位置限定为 arXiv（source `S4306400194`），纯期刊记录不进响应；从 doi（`10.48550/arxiv.*`）、`best_oa_location.pdf_url`（`arxiv.org/pdf/*`）或 `primary_location.landing_page_url`（`arxiv.org/abs/*`）提取 arxiv_id，提取不出的非 arXiv 记录直接丢弃；按 arxiv_id 去重保序；不重建摘要（OpenAlex 倒排索引格式，范围外）
+
+**数据流：**
+
+```
+查询（前端「arXiv 搜索」页签 / agent 工具 search_external_papers）
+  → search_with_fallback()   — 三源链 S2（有 key）→ arXiv Atom → OpenAlex；失败降级下家，notice 标注降级来源
+  → (结果, source, notice)   — 前端结果列表 / 工具编号列表（S2 腿带被引数/摘要），arxiv_id 对用户可见
+  → POST /api/arxiv/open     — {arxiv_id}
+  → download_pdf()           — arXiv CDN 下载至 ~/.local/share/paper-master/downloads/（原子写，已存在跳过）
+  → papers.open_paper(path)  — 进入既有管线（缓存/异步 MinerU 解析/SSE 对话），与 Zotero 打开同一入口
+```
+
+**端点契约（server.py）：**
+
+| 端点 | 契约 |
+|------|------|
+| `GET /api/arxiv/search?q=&max_results=` | 200 `{results: ArxivResult[], source: "s2" \| "arxiv" \| "openalex"}`（source 标识实际来源，前端缺失视为 arxiv）；三源皆败 502「外部检索失败: …」；notice 不进前端响应，仅供 agent 工具与日志 |
+| `POST /api/arxiv/open` `{arxiv_id}` | body 缺失/格式非法 400（正则校验，兼防路径穿越）；下载限流或失败 502（限流时 detail 为友好文案）；`open_paper` 失败 500；成功返回与 `POST /api/papers/open` 同构的 paper_id + status |
+
+agent 工具 `search_external_papers(query, max_results)` 走同一编排：结果首行为 notice（非空时——「[Semantic Scholar 不可用，以下为 arXiv 检索结果]」或「[arXiv 暂不可用，以下为 OpenAlex 兜底结果]」），每条含被引数（citation_count 非 None 时「被引 N」）与摘要行（tldr 优先，否则 abstract，截断 200 字），末行提示把 arxiv_id 提供给用户在 Web 端打开。
+
 ## 子系统注意事项
 
 ### BGE-M3
@@ -212,15 +242,18 @@ paper-master/
 │   ├── zotero.py            # Zotero 只读数据层（直读 sqlite）
 │   ├── papers.py            # Web 会话仓库：Session + 异步解析 + 历史/观察落盘 + SSE 事件源 + chunks-index
 │   ├── observations.py      # Session Observation + 图像描述缓存读写
+│   ├── arxiv_search.py      # arXiv 搜索客户端：限速闸 + 429 退避重试 + 三源兜底编排（S2→arXiv→OpenAlex）
+│   ├── s2_search.py         # Semantic Scholar 客户端：主源搜索 + 1rps 闸 + 429 重试 + key 加载
+│   ├── openalex_search.py   # OpenAlex 薄客户端，降级兜底
 │   ├── latex_fix.py         # OCR 公式 LaTeX 语义规范化（serve-time）
 │   ├── math_quality.py      # 数学质量层：覆盖率统计 + OCR/污染检测（含 CLI）
-│   └── server.py            # FastAPI：/api/zotero/* + /api/papers/* + 前端静态托管
+│   └── server.py            # FastAPI：/api/zotero/* + /api/papers/* + /api/arxiv/* + 前端静态托管
 ├── frontend/                # React + TypeScript + Ant Design + Vite
 │   ├── src/citation.ts      # 引用归一化/定位纯函数（chunk snippets → 已渲染 DOM 命中元素）
 │   ├── src/markdown/        # 共享 remark/rehype 插件栈 + rehypeMathInHtml + KaTeX CSS 同步回归测试
 │   ├── scripts/             # math-coverage.mjs 公式覆盖率校验
 │   └── dist/                # 构建产物（server.py 静态托管）
-└── tests/                   # 281 个 Python 测试 + 43 个前端 vitest
+└── tests/                   # 392 个 Python 测试 + 55 个前端 vitest
 ```
 
 ## 模型路由
